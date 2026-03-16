@@ -172,6 +172,7 @@ pub mod graph;
 pub mod runner;
 pub mod storage;
 pub mod storage_postgres;
+pub mod storage_sqlite;
 pub mod task;
 pub mod fanout;
 pub mod streaming;
@@ -201,6 +202,7 @@ pub use storage::{
     GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session, SessionStorage,
 };
 pub use storage_postgres::PostgresSessionStorage;
+pub use storage_sqlite::SqliteSessionStorage;
 pub use task::{NextAction, Task, TaskResult};
 pub use fanout::FanOutTask;
 pub use streaming::{StreamChunk, StreamMode, StreamingRunner, StreamingTask};

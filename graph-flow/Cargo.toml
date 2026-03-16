@@ -30,7 +30,7 @@ tracing = "0.1"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 dashmap = "6.1"
 chrono = { version = "0.4", features = ["serde"] }
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "json", "macros", "uuid"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "sqlite", "json", "macros", "uuid"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 rig-core = { version = "0.19.0", optional = true }
 lance = { version = "2", optional = true, default-features = false }
