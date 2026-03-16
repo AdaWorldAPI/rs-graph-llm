@@ -33,8 +33,15 @@ chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "json", "macros", "uuid"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 rig-core = { version = "0.19.0", optional = true }
+lance = { version = "2", optional = true, default-features = false }
+arrow = { version = "57", features = ["prettyprint"], optional = true }
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 default = ["mcp"]
 rig = ["dep:rig-core"]
 mcp = ["dep:reqwest"]
+lance-store = ["dep:lance", "dep:arrow"]

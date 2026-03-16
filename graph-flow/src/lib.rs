@@ -188,6 +188,9 @@ pub mod run_config;
 pub mod tool_result;
 pub mod task_registry;
 pub mod react_agent;
+pub mod store;
+pub mod prebuilt;
+pub mod state_snapshot;
 
 // Re-export commonly used types
 pub use context::{ChatHistory, Context, MessageRole, SerializableMessage};
@@ -212,7 +215,13 @@ pub use channels::{ChannelConfig, ChannelReducer, Channels};
 pub use run_config::{BreakpointConfig, RunConfig};
 pub use tool_result::ToolResult;
 pub use task_registry::TaskRegistry;
-pub use react_agent::create_react_agent;
+pub use react_agent::{create_react_agent, create_react_agent_with_prompt};
+pub use store::{BaseStore, InMemoryStore, Item, SearchItem, MatchCondition, IntoNamespace};
+#[cfg(feature = "lance-store")]
+pub use store::LanceStore;
+pub use prebuilt::interrupt::{HumanInterrupt, HumanResponse, ActionRequest, NodeInterrupt};
+pub use prebuilt::tool_node::{ToolNode, ToolCallRequest, InterceptorAction, tools_condition};
+pub use state_snapshot::StateSnapshot;
 
 #[cfg(test)]
 mod tests {

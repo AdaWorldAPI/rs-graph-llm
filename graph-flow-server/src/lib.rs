@@ -34,6 +34,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
+    response::sse::{Event, Sse},
     routing::{delete, get, post},
 };
 use graph_flow::{
@@ -41,6 +42,7 @@ use graph_flow::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use futures::stream;
 
 /// Shared application state.
 #[derive(Clone)]
@@ -82,6 +84,21 @@ pub struct StateResponse {
     pub context: serde_json::Value,
 }
 
+/// A single entry in thread history.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub task_id: String,
+    pub index: usize,
+}
+
+/// Response for thread history.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoryResponse {
+    pub thread_id: String,
+    pub entries: Vec<HistoryEntry>,
+    pub current_task: String,
+}
+
 /// Create the Axum router with all endpoints.
 pub fn create_router(
     graph: Arc<Graph>,
@@ -93,7 +110,9 @@ pub fn create_router(
     Router::new()
         .route("/threads", post(create_thread))
         .route("/threads/{id}/runs", post(run_thread))
+        .route("/threads/{id}/runs/stream", post(run_thread_stream))
         .route("/threads/{id}/state", get(get_state))
+        .route("/threads/{id}/history", get(get_history))
         .route("/threads/{id}", delete(delete_thread))
         .with_state(state)
 }
@@ -183,6 +202,83 @@ async fn delete_thread(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// SSE streaming endpoint — runs the graph step by step, emitting events.
+async fn run_thread_stream(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)> {
+    // Verify session exists
+    let _session = state
+        .storage
+        .get(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Thread {} not found", id)))?;
+
+    let runner = state.runner.clone();
+    let storage = state.storage.clone();
+    let thread_id = id.clone();
+
+    let event_stream = stream::unfold(
+        (runner, storage, thread_id, false),
+        |(runner, storage, thread_id, done)| async move {
+            if done {
+                return None;
+            }
+            match runner.run(&thread_id).await {
+                Ok(result) => {
+                    let is_done = matches!(result.status, ExecutionStatus::Completed | ExecutionStatus::Error(_));
+                    let event_data = serde_json::json!({
+                        "response": result.response,
+                        "status": format!("{:?}", result.status),
+                    });
+                    let event = Event::default()
+                        .data(event_data.to_string())
+                        .event("step");
+                    Some((Ok(event), (runner, storage, thread_id, is_done)))
+                }
+                Err(e) => {
+                    let event = Event::default()
+                        .data(serde_json::json!({"error": e.to_string()}).to_string())
+                        .event("error");
+                    Some((Ok(event), (runner, storage, thread_id, true)))
+                }
+            }
+        },
+    );
+
+    Ok(Sse::new(event_stream))
+}
+
+/// Get thread execution history.
+async fn get_history(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+    let session = state
+        .storage
+        .get(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Thread {} not found", id)))?;
+
+    let entries: Vec<HistoryEntry> = session
+        .task_history
+        .iter()
+        .enumerate()
+        .map(|(i, task_id)| HistoryEntry {
+            task_id: task_id.clone(),
+            index: i,
+        })
+        .collect();
+
+    Ok(Json(HistoryResponse {
+        thread_id: id,
+        entries,
+        current_task: session.current_task_id,
+    }))
 }
 
 #[cfg(test)]
