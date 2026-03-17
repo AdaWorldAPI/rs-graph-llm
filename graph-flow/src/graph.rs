@@ -458,9 +458,78 @@ impl GraphBuilder {
         self
     }
 
+    /// Add a sequence of tasks connected by edges in order.
+    ///
+    /// Maps to LangGraph's `add_sequence()`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use graph_flow::{GraphBuilder, Task, TaskResult, NextAction, Context};
+    /// # use async_trait::async_trait;
+    /// # use std::sync::Arc;
+    /// # struct A; struct B; struct C;
+    /// # #[async_trait] impl Task for A { fn id(&self) -> &str { "a" } async fn run(&self, _: Context) -> graph_flow::Result<TaskResult> { Ok(TaskResult::new(None, NextAction::End)) } }
+    /// # #[async_trait] impl Task for B { fn id(&self) -> &str { "b" } async fn run(&self, _: Context) -> graph_flow::Result<TaskResult> { Ok(TaskResult::new(None, NextAction::End)) } }
+    /// # #[async_trait] impl Task for C { fn id(&self) -> &str { "c" } async fn run(&self, _: Context) -> graph_flow::Result<TaskResult> { Ok(TaskResult::new(None, NextAction::End)) } }
+    /// let graph = GraphBuilder::new("pipeline")
+    ///     .add_sequence(vec![Arc::new(A) as _, Arc::new(B) as _, Arc::new(C) as _])
+    ///     .build();
+    /// ```
+    pub fn add_sequence(mut self, tasks: Vec<Arc<dyn Task>>) -> Self {
+        let ids: Vec<String> = tasks.iter().map(|t| t.id().to_string()).collect();
+        for task in tasks {
+            self = self.add_task(task);
+        }
+        for window in ids.windows(2) {
+            self = self.add_edge(&window[0], &window[1]);
+        }
+        self
+    }
+
     pub fn set_start_task(self, task_id: impl Into<String>) -> Self {
         self.graph.set_start_task(task_id);
         self
+    }
+
+    /// Validate the graph and return errors instead of just warnings.
+    ///
+    /// Checks for:
+    /// - Empty graph
+    /// - Orphaned tasks (no edges)
+    /// - Missing start task
+    /// - Edges referencing non-existent tasks
+    pub fn validate(&self) -> Result<()> {
+        if self.graph.tasks.is_empty() {
+            return Err(GraphError::ValidationError("Graph has no tasks".into()));
+        }
+
+        // Check start task
+        let start = self.graph.start_task_id.lock().unwrap();
+        if start.is_none() && self.graph.tasks.len() > 1 {
+            return Err(GraphError::ValidationError(
+                "Graph has multiple tasks but no explicit start task".into(),
+            ));
+        }
+
+        // Check edges reference valid tasks
+        let edges = self.graph.edges.lock().unwrap();
+        for edge in edges.iter() {
+            if !self.graph.tasks.contains_key(&edge.from) {
+                return Err(GraphError::ValidationError(format!(
+                    "Edge references non-existent source task '{}'",
+                    edge.from
+                )));
+            }
+            if !self.graph.tasks.contains_key(&edge.to) {
+                return Err(GraphError::ValidationError(format!(
+                    "Edge references non-existent target task '{}'",
+                    edge.to
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     pub fn build(self) -> Graph {

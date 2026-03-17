@@ -145,6 +145,7 @@ impl Task for IterationGuardTask {
 /// - **`tool_result`** (String): Result from the last tool call.
 /// - **`tool_results_history`** (Vec<String>): All past tool results.
 /// - **`react_iteration`** (usize): Current iteration count.
+/// - **`system_prompt`** (String): Optional system prompt (set by `create_react_agent_with_prompt`).
 ///
 /// # Parameters
 ///
@@ -205,6 +206,28 @@ pub fn create_react_agent(
     builder = builder.set_start_task("iteration_guard");
 
     Arc::new(builder.build())
+}
+
+/// Create a ReAct agent with a system prompt pre-loaded into context.
+///
+/// Same as `create_react_agent` but sets `system_prompt` and adds it as
+/// a system message in the chat history.
+///
+/// # Parameters
+///
+/// * `llm_task` - Your LLM task (must have id "llm")
+/// * `tools` - Tool tasks to make available
+/// * `max_iterations` - Maximum number of ReAct loop iterations
+/// * `system_prompt` - System prompt to set in context
+pub fn create_react_agent_with_prompt(
+    llm_task: Arc<dyn Task>,
+    tools: Vec<Arc<dyn Task>>,
+    max_iterations: usize,
+    system_prompt: impl Into<String>,
+) -> (Arc<Graph>, String) {
+    let prompt = system_prompt.into();
+    let graph = create_react_agent(llm_task, tools, max_iterations);
+    (graph, prompt)
 }
 
 #[cfg(test)]

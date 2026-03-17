@@ -79,6 +79,7 @@ async fn recommend(
         current_task_id: refine_task_id.to_string(),
         status_message: None,
         context,
+        task_history: Vec::new(),
     };
 
     // Save initial session - FlowRunner will handle persistence during execution
