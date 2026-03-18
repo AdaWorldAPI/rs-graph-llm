@@ -17,12 +17,12 @@
 //! channels.apply("messages", serde_json::json!("hello"));
 //! channels.apply("messages", serde_json::json!("world"));
 //! let messages = channels.get("messages").unwrap();
-//! assert_eq!(messages, serde_json::json!(["hello", "world"]));
+//! assert_eq!(messages, &serde_json::json!(["hello", "world"]));
 //!
 //! // LastValue mode: overwrite
 //! channels.apply("current_step", serde_json::json!("step_1"));
 //! channels.apply("current_step", serde_json::json!("step_2"));
-//! assert_eq!(channels.get("current_step").unwrap(), serde_json::json!("step_2"));
+//! assert_eq!(channels.get("current_step").unwrap(), &serde_json::json!("step_2"));
 //! ```
 
 use serde_json::Value;
