@@ -169,7 +169,7 @@ impl Task for McpToolTask {
             })?;
 
         let response = client
-            .post(&format!("{}/mcp", self.config.server_url))
+            .post(format!("{}/mcp", self.config.server_url))
             .json(&request_body)
             .send()
             .await

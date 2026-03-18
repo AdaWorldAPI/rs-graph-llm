@@ -192,6 +192,7 @@ pub mod react_agent;
 pub mod store;
 pub mod prebuilt;
 pub mod state_snapshot;
+pub mod tiered_storage;
 
 // Re-export commonly used types
 pub use context::{ChatHistory, Context, MessageRole, SerializableMessage};
@@ -224,6 +225,7 @@ pub use store::LanceStore;
 pub use prebuilt::interrupt::{HumanInterrupt, HumanResponse, ActionRequest, NodeInterrupt};
 pub use prebuilt::tool_node::{ToolNode, ToolCallRequest, InterceptorAction, tools_condition};
 pub use state_snapshot::StateSnapshot;
+pub use tiered_storage::TieredSessionStorage;
 
 #[cfg(test)]
 mod tests {

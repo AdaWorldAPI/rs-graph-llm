@@ -253,7 +253,7 @@ impl Task for ToolNode {
 /// Maps to LangGraph's `tools_condition()`.
 pub fn tools_condition(ctx: &Context) -> bool {
     let calls: Option<Vec<ToolCallRequest>> = ctx.get_sync("tool_calls");
-    calls.map_or(false, |c| !c.is_empty())
+    calls.is_some_and(|c| !c.is_empty())
 }
 
 #[cfg(test)]

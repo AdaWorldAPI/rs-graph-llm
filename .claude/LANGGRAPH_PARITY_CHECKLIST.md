@@ -21,12 +21,12 @@ Legend:
 | `add_edge()` | DONE | — | Direct + conditional |
 | Binary conditional edges | DONE | — | `add_conditional_edge(from, cond, yes, no)` |
 | N-way conditional edges (`path_map`) | DONE | — | `add_conditional_edges(from, path_fn, path_map)` |
-| `add_sequence()` (ordered chain) | MISSING | P2 | Sugar — easy to add |
+| `add_sequence()` (ordered chain) | DONE | — | `GraphBuilder::add_sequence()` in graph.rs |
 | `set_entry_point()` | DONE | — | `set_start_task()` |
 | `set_conditional_entry_point()` | MISSING | P2 | Conditional start routing |
 | `set_finish_point()` | MISSING | P3 | Implicit via `NextAction::End` |
 | `compile()` | DONE | — | `build()` / `StateGraph::compile()` |
-| `validate()` (graph validation) | MISSING | P1 | Detect orphan nodes, cycles, unreachable |
+| `validate()` (graph validation) | DONE | — | `GraphBuilder::validate()` in graph.rs |
 
 ## Graph Execution
 
@@ -60,8 +60,8 @@ Legend:
 | `add_messages` reducer | PARTIAL | P1 | Manual add, no dedup/update by ID |
 | Context serialization | DONE | — | `Context::serialize()` |
 | Sync + async access | DONE | — | `get_sync()` / `set_sync()` + async |
-| State snapshots | MISSING | P1 | `StateSnapshot` equivalent |
-| State history / time travel | PARTIAL | P1 | `LanceSessionStorage::list_versions()` |
+| State snapshots | DONE | — | `StateSnapshot` in state_snapshot.rs |
+| State history / time travel | PARTIAL | P1 | `LanceSessionStorage::list_versions()` (mock — not real Lance I/O) |
 
 ## Channels
 
@@ -96,7 +96,7 @@ Legend:
 | `get_next_version()` | MISSING | P3 | Auto-version numbering |
 | Serde: msgpack | MISSING | P3 | JSON is sufficient |
 | Serde: encrypted | MISSING | P2 | Sensitive data at rest |
-| SQLite storage | MISSING | P3 | Postgres + Lance cover needs |
+| SQLite storage | DONE | — | `SqliteSessionStorage` in storage_sqlite.rs |
 
 ## Subgraphs
 
@@ -115,18 +115,18 @@ Legend:
 | `create_react_agent()` | DONE | — | With iteration guard |
 | Tool routing | DONE | — | `ToolRouterTask` |
 | Tool aggregation | DONE | — | `ToolAggregatorTask` |
-| `ToolNode` (full) | PARTIAL | P1 | Basic routing, no interceptors |
+| `ToolNode` (full) | DONE | — | `ToolNode` with interceptors in prebuilt/tool_node.rs |
 | `tools_condition()` | DONE | — | Conditional edge on `needs_tool` |
 | `InjectedState` | MISSING | P1 | Tool state injection |
 | `InjectedStore` | MISSING | P2 | Tool store injection |
 | `ToolRuntime` | MISSING | P2 | Runtime injection to tools |
-| `ToolCallRequest` / interceptors | MISSING | P1 | Request interception pipeline |
+| `ToolCallRequest` / interceptors | DONE | — | `ToolCallRequest`, `InterceptorAction` in prebuilt/tool_node.rs |
 | `ValidationNode` | MISSING | P2 | Schema validation for tool calls |
-| Prompt / system message | MISSING | P1 | System prompt in ReAct agent |
+| Prompt / system message | DONE | — | `create_react_agent_with_prompt()` in react_agent.rs |
 | Model selection (multi-model) | MISSING | P1 | Dynamic model per-call |
 | `generate_structured_response()` | MISSING | P2 | Structured output mode |
-| `HumanInterrupt` config | MISSING | P1 | Structured human-in-the-loop |
-| `HumanResponse` | MISSING | P1 | Response format |
+| `HumanInterrupt` config | DONE | — | `HumanInterrupt` + `ActionRequest` in prebuilt/interrupt.rs |
+| `HumanResponse` | DONE | — | `HumanResponse` enum (Action/Text/Cancel) in prebuilt/interrupt.rs |
 | `post_model_hook` | MISSING | P2 | Post-inference processing |
 
 ## Agent Cards / YAML
@@ -146,9 +146,9 @@ Legend:
 | `GraphError` enum | DONE | — | 7 variants |
 | `ToolResult` (success/error/fallback) | DONE | — | Structured results |
 | Retry policy | DONE | — | Fixed/Exponential/None |
-| `GraphRecursionError` | PARTIAL | P1 | Limit exists, no dedicated error |
-| `NodeInterrupt` | MISSING | P1 | Per-node interrupt |
-| `GraphInterrupt` | PARTIAL | P1 | Via WaitForInput |
+| `GraphRecursionError` | DONE | — | `RecursionLimitExceeded` variant in error.rs |
+| `NodeInterrupt` | DONE | — | `NodeInterrupt` struct in prebuilt/interrupt.rs |
+| `GraphInterrupt` | DONE | — | `GraphInterrupt` variant with task_id/reason/data in error.rs |
 | `InvalidUpdateError` | MISSING | P3 | Via TaskExecutionFailed |
 | Error codes | MISSING | P3 | Enum-based codes |
 
@@ -156,13 +156,13 @@ Legend:
 
 | Feature | Status | Priority | Notes |
 |---------|--------|----------|-------|
-| `BaseStore` trait | MISSING | P0 | Critical for agent memory |
-| `InMemoryStore` | MISSING | P0 | Dev/test store |
-| `Item` / `SearchItem` | MISSING | P0 | Store data types |
-| `get()` / `put()` / `delete()` | MISSING | P0 | CRUD operations |
-| `search()` with embeddings | MISSING | P0 | Vector search (lance-graph!) |
-| `list_namespaces()` | MISSING | P1 | Namespace enumeration |
-| `MatchCondition` | MISSING | P1 | Filter predicates |
+| `BaseStore` trait | DONE | — | `BaseStore` trait in store/mod.rs |
+| `InMemoryStore` | DONE | — | `InMemoryStore` in store/memory.rs |
+| `Item` / `SearchItem` | DONE | — | `Item`, `SearchItem` in store/mod.rs |
+| `get()` / `put()` / `delete()` | DONE | — | Full CRUD in BaseStore trait |
+| `search()` with embeddings | PARTIAL | P1 | Filter search done; vector/embedding search via LanceStore NOT YET |
+| `list_namespaces()` | DONE | — | Implemented in InMemoryStore |
+| `MatchCondition` | DONE | — | JSON path filtering in store/mod.rs |
 | `IndexConfig` / `TTLConfig` | MISSING | P2 | Index + expiry config |
 | `AsyncBatchedBaseStore` | MISSING | P2 | Batched async operations |
 | `PostgresStore` | MISSING | P1 | Persistent store |
@@ -191,8 +191,8 @@ Legend:
 | Thread execution (POST) | DONE | — | `/threads/{id}/runs` |
 | Thread state (GET) | DONE | — | `/threads/{id}/state` |
 | Thread deletion (DELETE) | DONE | — | `/threads/{id}` |
-| Thread history (GET) | MISSING | P1 | `/threads/{id}/history` |
-| SSE streaming endpoint | MISSING | P1 | Server-sent events |
+| Thread history (GET) | DONE | — | `GET /threads/{id}/history` in server |
+| SSE streaming endpoint | DONE | — | `POST /threads/{id}/runs/stream` SSE in server |
 | Cron runs | MISSING | P3 | Scheduled execution |
 | Assistants CRUD | MISSING | P2 | Multi-graph management |
 
@@ -206,18 +206,20 @@ Legend:
 
 ---
 
-## Priority Summary
+## Priority Summary (Updated 2026-03-18)
 
-| Priority | Count | Description |
-|----------|-------|-------------|
-| **P0** | 5 | Store/memory system (critical for agents) |
-| **P1** | 18 | Core parity gaps (interrupts, HITL, validation, streaming) |
+| Priority | Remaining | Description |
+|----------|-----------|-------------|
+| **P0** | 0 | Store/memory system — DONE |
+| **P1** | 5 | Remaining: InjectedState, model selection, add_messages dedup, vector search in LanceStore, LanceSessionStorage real I/O |
 | **P2** | 22 | Nice-to-have features (functional API, visualization, advanced channels) |
 | **P3** | 12 | Low priority (edge cases, rarely used) |
 
-### Recommended Sprint Order
+### Completed Sprints
+- **Sprint 1 (P0)**: ✅ Store/Memory — BaseStore, InMemoryStore, Item/SearchItem, MatchCondition
+- **Sprint 2 (P1-core)**: ✅ Interrupts (NodeInterrupt, HumanInterrupt/Response), graph validation, SSE streaming, thread history
+- **Sprint 3 (P1-agents)**: ✅ PARTIAL — ReAct with prompt done, ToolNode+interceptors done. Missing: InjectedState, model selection
 
-1. **Sprint 1 (P0)**: Store/Memory system — `BaseStore` trait, `InMemoryStore`, `Item`/`SearchItem`, integrate with lance-graph vector search
-2. **Sprint 2 (P1-core)**: Structured interrupts (`NodeInterrupt`, `HumanInterrupt`/`HumanResponse`), graph validation, SSE streaming
-3. **Sprint 3 (P1-agents)**: Enhanced ReAct agent (prompt support, model selection), `InjectedState`, `ToolCallRequest` interceptors
-4. **Sprint 4 (P2)**: Functional API macros, Mermaid export, advanced channels, `Runtime`
+### Next Sprint
+- **Sprint 4 (P1-storage)**: Real LanceSessionStorage (Lance I/O, not DashMap mock), PostgreSQL BYTEA migration, TieredSessionStorage, LanceStore for BaseStore
+- **Sprint 5 (P2)**: Functional API macros, Mermaid export, advanced channels, `Runtime`
