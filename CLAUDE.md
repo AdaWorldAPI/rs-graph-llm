@@ -150,6 +150,28 @@ The examples/ folder contains multiple binaries showing different complexity lev
 
 - **graph-flow core framework**: DONE (10,387 lines, all components: Task, Context, Runner, GraphBuilder, FanOut, SubgraphTask, ReAct, MCP, Streaming, Channels, State snapshots, Retry)
 - **Storage backends** (InMemory, Postgres, SQLite): DONE
+- **Lance session storage**: DONE (time-travel versioning via Lance)
 - **3 example services** (insurance, recommendation, medical): DONE
 - **AriGraph integration** (graph-flow-memory crate): OPEN — 5-sprint plan in docs/arigraph-integration-plan.md, zero code written
 - **Build status**: FAILS due to ort-sys SSL certificate error (environment issue, not code bug)
+
+### Cross-Repo Dependencies (NEW — 2026-03-22)
+
+rs-graph-llm sits at **Level 2 (ORCHESTRATE)** in the Ada ecosystem:
+
+```
+ndarray (Level 0: COMPUTE) → lance-graph (Level 1: GRAPH) → rs-graph-llm (Level 2: ORCHESTRATE)
+```
+
+- **ndarray** (`AdaWorldAPI/ndarray`): HPC compute — Fingerprint, Plane, Cascade, BLAS, SIMD dispatch. Used for embedding similarity in AriGraph retrieval and cascade search.
+- **lance-graph** (`AdaWorldAPI/lance-graph`): Graph algebra — 7 semirings, SPO triple store, Cypher parser, DataFusion planner, Lance persistence. Used as graph storage backend and query surface.
+- **crewai-rust** (`AdaWorldAPI/crewai-rust`): Agent framework — Blackboard, NARS/SPO drivers, Persona system. Integration pending (Option A/B/C decision at Plateau 1 gate).
+
+### Integration Plan
+
+See `/home/user/INTEGRATION_PLAN.md` for the four-plateau migration strategy.
+
+Key milestones for rs-graph-llm:
+- **P1A**: Create graph-flow-memory crate (AriGraph schema port)
+- **P1B**: Evaluate crewai-rust integration depth
+- **P3B**: Wire lance-graph + ndarray into thinking pipeline
