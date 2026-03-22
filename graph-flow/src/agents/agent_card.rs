@@ -197,12 +197,11 @@ pub fn compile_agent_card_from_def(card: &AgentCard) -> Result<Arc<Graph>> {
 
     // Wire workflow steps
     for step in &card.agent.workflow {
-        if let Some(ref next) = step.next {
-            if next != "end" {
+        if let Some(ref next) = step.next
+            && next != "end" {
                 builder = builder.add_edge(&step.task, next);
             }
             // "end" means no outgoing edge — task will naturally end
-        }
 
         // Handle conditional edges
         if let (Some(condition_key), Some(on_success), Some(on_failure)) = (
