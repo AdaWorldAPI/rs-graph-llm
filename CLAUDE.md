@@ -15,7 +15,7 @@ cargo run --bin recommendation-service
 
 # Run examples
 cargo run --bin simple_example
-cargo run --bin complex_example  
+cargo run --bin complex_example
 cargo run --bin recommendation_flow
 cargo run --bin terminal_client
 cargo run --bin fanout_basic
@@ -125,7 +125,7 @@ Services typically expose HTTP APIs using Axum:
 ### Session Lifecycle
 1. Create session with starting task: `Session::new_from_task()`
 2. Set initial context data: `session.context.set()`
-3. Execute step-by-step: `flow_runner.run(session_id)` 
+3. Execute step-by-step: `flow_runner.run(session_id)`
 4. Handle execution results based on `ExecutionStatus`:
    - `Paused { next_task_id }`: Continue execution loop, workflow will automatically proceed
    - `WaitingForInput`: Continue execution loop, workflow is waiting for user input
@@ -145,3 +145,11 @@ Services typically expose HTTP APIs using Axum:
 - `examples/`: Simple demonstrations and learning materials
 
 The examples/ folder contains multiple binaries showing different complexity levels - start with `simple_example.rs` for basics, then explore `recommendation_flow.rs` for a complete end-to-end RAG workflow.
+
+## Status (2026-03-22 Audit)
+
+- **graph-flow core framework**: DONE (10,387 lines, all components: Task, Context, Runner, GraphBuilder, FanOut, SubgraphTask, ReAct, MCP, Streaming, Channels, State snapshots, Retry)
+- **Storage backends** (InMemory, Postgres, SQLite): DONE
+- **3 example services** (insurance, recommendation, medical): DONE
+- **AriGraph integration** (graph-flow-memory crate): OPEN — 5-sprint plan in docs/arigraph-integration-plan.md, zero code written
+- **Build status**: FAILS due to ort-sys SSL certificate error (environment issue, not code bug)
