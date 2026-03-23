@@ -441,6 +441,68 @@ pub trait Task: Send + Sync {
         std::any::type_name::<Self>()
     }
 
+    /// Returns the context keys this task expects to read.
+    ///
+    /// Used by `Context::validate_context()` to check that all required
+    /// input keys are present before task execution. The default
+    /// implementation returns an empty slice (no required inputs).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use graph_flow::{Task, TaskResult, NextAction, Context};
+    /// # use async_trait::async_trait;
+    /// struct GreeterTask;
+    ///
+    /// #[async_trait]
+    /// impl Task for GreeterTask {
+    ///     fn id(&self) -> &str { "greeter" }
+    ///
+    ///     fn input_keys(&self) -> &[&str] {
+    ///         &["name"]
+    ///     }
+    ///
+    ///     async fn run(&self, context: Context) -> graph_flow::Result<TaskResult> {
+    ///         let name: String = context.get("name").await.unwrap();
+    ///         Ok(TaskResult::new(Some(format!("Hello, {}!", name)), NextAction::End))
+    ///     }
+    /// }
+    /// ```
+    fn input_keys(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Returns the context keys this task is expected to write.
+    ///
+    /// Used for documentation and optional post-execution validation.
+    /// The default implementation returns an empty slice (no declared outputs).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use graph_flow::{Task, TaskResult, NextAction, Context};
+    /// # use async_trait::async_trait;
+    /// struct ProcessorTask;
+    ///
+    /// #[async_trait]
+    /// impl Task for ProcessorTask {
+    ///     fn id(&self) -> &str { "processor" }
+    ///
+    ///     fn output_keys(&self) -> &[&str] {
+    ///         &["processed_data", "summary"]
+    ///     }
+    ///
+    ///     async fn run(&self, context: Context) -> graph_flow::Result<TaskResult> {
+    ///         context.set("processed_data", "data".to_string()).await;
+    ///         context.set("summary", "done".to_string()).await;
+    ///         Ok(TaskResult::new(None, NextAction::Continue))
+    ///     }
+    /// }
+    /// ```
+    fn output_keys(&self) -> &[&str] {
+        &[]
+    }
+
     /// Execute the task with the given context.
     ///
     /// This is where you implement your task's logic. You have access to
@@ -473,13 +535,13 @@ pub trait Task: Send + Sync {
     ///         // Read input from context
     ///         let input: String = context.get("raw_data").await
     ///             .unwrap_or_default();
-    ///         
+    ///
     ///         // Process the data
     ///         let processed = self.process_data(&input).await?;
-    ///         
+    ///
     ///         // Store result for next task
     ///         context.set("processed_data", processed.clone()).await;
-    ///         
+    ///
     ///         // Return result with next action
     ///         Ok(TaskResult::new(
     ///             Some(format!("Processed {} bytes", processed.len())),

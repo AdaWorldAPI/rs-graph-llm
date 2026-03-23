@@ -595,6 +595,59 @@ impl Context {
         self.data.insert(key.into(), value);
     }
 
+    /// Check whether the context contains all of the given keys.
+    ///
+    /// Returns `Ok(())` if every key is present, or an `Err` listing
+    /// the missing keys. This is useful for pre-flight validation
+    /// before running a task.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use graph_flow::Context;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let ctx = Context::new();
+    /// ctx.set("name", "Alice".to_string()).await;
+    ///
+    /// // Passes — "name" is present
+    /// assert!(ctx.validate_context(&["name"]).is_ok());
+    ///
+    /// // Fails — "age" is missing
+    /// let err = ctx.validate_context(&["name", "age"]).unwrap_err();
+    /// assert!(err.contains("age"));
+    /// # }
+    /// ```
+    pub fn validate_context(&self, required_keys: &[&str]) -> std::result::Result<(), String> {
+        let missing: Vec<&str> = required_keys
+            .iter()
+            .filter(|k| !self.data.contains_key(**k))
+            .copied()
+            .collect();
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("Missing required context keys: {}", missing.join(", ")))
+        }
+    }
+
+    /// Check whether the context contains all required keys, returning
+    /// a `GraphError::ContextError` on failure.
+    ///
+    /// This is a convenience wrapper around `validate_context` for use
+    /// inside task implementations.
+    pub fn require_keys(&self, keys: &[&str]) -> crate::error::Result<()> {
+        self.validate_context(keys)
+            .map_err(crate::error::GraphError::ContextError)
+    }
+
+    /// Return a list of all keys currently stored in the context.
+    pub fn keys(&self) -> Vec<String> {
+        self.data.iter().map(|entry| entry.key().clone()).collect()
+    }
+
     /// Serialize all context key-value pairs to a JSON Value (object).
     pub async fn serialize(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();

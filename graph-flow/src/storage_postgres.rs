@@ -4,14 +4,30 @@ use std::sync::Arc;
 
 use crate::{Session, Context, error::{Result, GraphError}, storage::SessionStorage};
 
+/// Current schema version. Bump when making breaking schema changes.
+const SCHEMA_VERSION: i32 = 2;
+
+/// Default max connections for the PostgreSQL pool.
+const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+
 pub struct PostgresSessionStorage {
     pool: Arc<Pool<Postgres>>,
 }
 
 impl PostgresSessionStorage {
     pub async fn connect(database_url: &str) -> Result<Self> {
+        Self::connect_with_pool_size(database_url, DEFAULT_MAX_CONNECTIONS).await
+    }
+
+    /// Connect with a configurable connection pool size.
+    ///
+    /// The `max_connections` parameter controls the maximum number of
+    /// connections in the pool. Default is 5 when using `connect()`.
+    /// Tune this based on your workload and PostgreSQL `max_connections`
+    /// setting.
+    pub async fn connect_with_pool_size(database_url: &str, max_connections: u32) -> Result<Self> {
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(max_connections)
             .connect(database_url)
             .await
             .map_err(|e| GraphError::StorageError(format!("Failed to connect to Postgres: {e}")))?;
@@ -21,7 +37,21 @@ impl PostgresSessionStorage {
     }
 
     async fn migrate(pool: &Pool<Postgres>) -> Result<()> {
-        // Create table with BYTEA for context and TEXT for task_history
+        // Schema version tracking table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS schema_version (
+                id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                version INTEGER NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            "#,
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| GraphError::StorageError(format!("Schema version table creation failed: {e}")))?;
+
+        // Sessions table (v2: uses BYTEA for context, TEXT for task_history)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS sessions (
@@ -80,6 +110,34 @@ impl PostgresSessionStorage {
             .map_err(|e| GraphError::StorageError(format!("JSONB migration failed: {e}")))?;
         }
 
+        // Indexes for common query patterns
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_graph_id ON sessions (graph_id);"
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| GraphError::StorageError(format!("Index creation failed: {e}")))?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at);"
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| GraphError::StorageError(format!("Index creation failed: {e}")))?;
+
+        // Upsert schema version
+        sqlx::query(
+            r#"
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, $1, NOW())
+            ON CONFLICT (id) DO UPDATE SET version = $1, updated_at = NOW();
+            "#,
+        )
+        .bind(SCHEMA_VERSION)
+        .execute(pool)
+        .await
+        .map_err(|e| GraphError::StorageError(format!("Schema version update failed: {e}")))?;
+
         Ok(())
     }
 
@@ -110,6 +168,7 @@ impl SessionStorage for PostgresSessionStorage {
         let context_bytes = Self::context_to_bytes(&session.context).await?;
         let task_history = session.task_history.join("\n");
 
+        // Use a transaction to ensure atomicity
         let mut tx = self.pool.begin().await
             .map_err(|e| GraphError::StorageError(format!("Failed to start transaction: {e}")))?;
 
