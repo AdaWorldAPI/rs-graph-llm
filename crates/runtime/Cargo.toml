@@ -1,0 +1,18 @@
+[package]
+name = "notebook-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Reactive cell execution runtime (marimo transcode)"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+arrow = { workspace = true }
+arrow-array = { workspace = true }
