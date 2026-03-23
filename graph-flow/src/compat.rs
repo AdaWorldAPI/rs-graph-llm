@@ -263,6 +263,72 @@ pub struct CheckpointConfig {
     pub checkpoint_ns: Option<String>,
 }
 
+impl CheckpointConfig {
+    /// Create a new CheckpointConfig for the given thread.
+    pub fn new(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            checkpoint_id: None,
+            checkpoint_ns: None,
+        }
+    }
+
+    /// Set the checkpoint ID.
+    pub fn with_checkpoint_id(mut self, id: impl Into<String>) -> Self {
+        self.checkpoint_id = Some(id.into());
+        self
+    }
+
+    /// Set the checkpoint namespace.
+    pub fn with_namespace(mut self, ns: impl Into<String>) -> Self {
+        self.checkpoint_ns = Some(ns.into());
+        self
+    }
+
+    /// Create a storage [`Checkpoint`](crate::storage::Checkpoint) from this config and a session.
+    ///
+    /// If `checkpoint_id` is `None`, a hash-based ID is generated.
+    ///
+    /// The session is deep-copied via [`Session::snapshot`] so that the
+    /// checkpoint is independent of future mutations to the original session's
+    /// shared context.
+    pub async fn to_checkpoint(&self, session: &crate::storage::Session) -> crate::storage::Checkpoint {
+        let checkpoint_id = self
+            .checkpoint_id
+            .clone()
+            .unwrap_or_else(|| format!("{:016x}", {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                session.id.hash(&mut h);
+                session.current_task_id.hash(&mut h);
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .hash(&mut h);
+                h.finish()
+            }));
+
+        crate::storage::Checkpoint {
+            checkpoint_id,
+            thread_id: self.thread_id.clone(),
+            checkpoint_ns: self.checkpoint_ns.clone(),
+            session: session.snapshot().await,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    /// Build a `CheckpointConfig` from an existing storage checkpoint.
+    pub fn from_checkpoint(cp: &crate::storage::Checkpoint) -> Self {
+        Self {
+            thread_id: cp.thread_id.clone(),
+            checkpoint_id: Some(cp.checkpoint_id.clone()),
+            checkpoint_ns: cp.checkpoint_ns.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +403,84 @@ mod tests {
 
         let cmd = Command::resume(serde_json::json!("input"));
         assert!(matches!(cmd, Command::Resume(_)));
+    }
+
+    #[test]
+    fn test_checkpoint_config_builder() {
+        let cfg = CheckpointConfig::new("thread1")
+            .with_checkpoint_id("cp1")
+            .with_namespace("prod");
+        assert_eq!(cfg.thread_id, "thread1");
+        assert_eq!(cfg.checkpoint_id, Some("cp1".to_string()));
+        assert_eq!(cfg.checkpoint_ns, Some("prod".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_config_to_checkpoint() {
+        let session = crate::Session::new_from_task("thread1".to_string(), "task_a");
+        let cfg = CheckpointConfig::new("thread1").with_checkpoint_id("cp42");
+        let cp = cfg.to_checkpoint(&session).await;
+
+        assert_eq!(cp.checkpoint_id, "cp42");
+        assert_eq!(cp.thread_id, "thread1");
+        assert_eq!(cp.session.current_task_id, "task_a");
+        assert!(cp.checkpoint_ns.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_config_auto_id() {
+        let session = crate::Session::new_from_task("t1".to_string(), "task_a");
+        let cfg = CheckpointConfig::new("t1"); // no checkpoint_id
+        let cp = cfg.to_checkpoint(&session).await;
+
+        // Should generate a non-empty ID
+        assert!(!cp.checkpoint_id.is_empty());
+        assert_eq!(cp.thread_id, "t1");
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_config_roundtrip() {
+        let session = crate::Session::new_from_task("t1".to_string(), "task_a");
+        let cfg = CheckpointConfig::new("t1")
+            .with_checkpoint_id("cp99")
+            .with_namespace("staging");
+        let cp = cfg.to_checkpoint(&session).await;
+        let cfg2 = CheckpointConfig::from_checkpoint(&cp);
+
+        assert_eq!(cfg2.thread_id, "t1");
+        assert_eq!(cfg2.checkpoint_id, Some("cp99".to_string()));
+        assert_eq!(cfg2.checkpoint_ns, Some("staging".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_config_end_to_end_with_storage() {
+        use crate::{InMemorySessionStorage, SessionStorage};
+
+        let storage = InMemorySessionStorage::new();
+
+        // Create a session and checkpoint it via CheckpointConfig
+        let session = crate::Session::new_from_task("thread1".to_string(), "task_a");
+        session.context.set("step", 1i64).await;
+        storage.save(session.clone()).await.unwrap();
+
+        let cfg = CheckpointConfig::new("thread1").with_checkpoint_id("before_b");
+        let cp = cfg.to_checkpoint(&session).await;
+        storage.save_checkpoint(cp).await.unwrap();
+
+        // Advance the session
+        let mut session2 = storage.get("thread1").await.unwrap().unwrap();
+        session2.current_task_id = "task_b".to_string();
+        session2.context.set("step", 2i64).await;
+        storage.save(session2).await.unwrap();
+
+        // Restore from checkpoint
+        let restored = storage
+            .get_checkpoint("thread1", "before_b")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.session.current_task_id, "task_a");
+        let step: Option<i64> = restored.session.context.get("step").await;
+        assert_eq!(step, Some(1));
     }
 }
