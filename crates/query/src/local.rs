@@ -1,6 +1,6 @@
 //! Local Cypher engine — executes Cypher via lance-graph (no network hop).
 
-use crate::{GraphData, GraphNode, GraphEdge, QueryEngine, QueryError, QueryResult, QueryMetadata};
+use crate::{QueryEngine, QueryError, QueryResult, QueryMetadata};
 use async_trait::async_trait;
 use arrow::array::RecordBatch;
 use std::collections::HashMap;

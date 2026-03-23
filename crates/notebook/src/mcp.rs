@@ -230,20 +230,20 @@ fn tool_definitions() -> serde_json::Value {
     serde_json::json!([
         {
             "name": "cell_execute",
-            "description": "Execute a cell. Creates it if it doesn't exist. Returns result immediately.",
+            "description": "Execute a cell. Creates it if it doesn't exist. Language is auto-detected from code if `lang` is omitted or set to \"auto\". Returns result immediately.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "code":    { "type": "string", "description": "Source code to execute" },
-                    "lang":    { "type": "string", "description": "Language: cypher, gremlin, sparql, nars, rust, r, python, markdown" },
+                    "lang":    { "type": "string", "description": "Language: cypher, gremlin, sparql, nars, rust, r, python, markdown. Omit or \"auto\" for auto-detection." },
                     "cell_id": { "type": "string", "description": "Optional cell ID. Auto-generates if omitted." }
                 },
-                "required": ["code", "lang"]
+                "required": ["code"]
             }
         },
         {
             "name": "cell_get",
-            "description": "Read a cell's current state including code, status, and output.",
+            "description": "Read a cell's current state including code, status, output, and MIME type.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -262,15 +262,15 @@ fn tool_definitions() -> serde_json::Value {
         },
         {
             "name": "cell_create",
-            "description": "Add a cell at a position. Does not execute.",
+            "description": "Add a cell at a position. Language auto-detected if `lang` is omitted. Does not execute.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "code":  { "type": "string", "description": "Source code" },
-                    "lang":  { "type": "string", "description": "Language" },
+                    "lang":  { "type": "string", "description": "Language. Omit or \"auto\" for auto-detection." },
                     "after": { "type": "string", "description": "Insert after this cell ID" }
                 },
-                "required": ["code", "lang"]
+                "required": ["code"]
             }
         },
         {
@@ -294,6 +294,17 @@ fn tool_definitions() -> serde_json::Value {
                     "cell_id": { "type": "string", "description": "Cell to delete" }
                 },
                 "required": ["cell_id"]
+            }
+        },
+        {
+            "name": "detect_language",
+            "description": "Detect the language of a code snippet without creating a cell. Returns the detected language and confidence.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "Code to analyze" }
+                },
+                "required": ["code"]
             }
         },
         {
@@ -328,7 +339,7 @@ fn tool_definitions() -> serde_json::Value {
         },
         {
             "name": "notebook_export",
-            "description": "Render the notebook to HTML or PDF via the publish crate.",
+            "description": "Render the notebook to cockpit HTML (dense panels, interactive graph, sortable tables) or Markdown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -356,6 +367,7 @@ async fn handle_tools_call(state: &AppState, req: &JsonRpcRequest) -> JsonRpcRes
         "cell_create" => tool_cell_create(state, &arguments).await,
         "cell_update" => tool_cell_update(state, &arguments).await,
         "cell_delete" => tool_cell_delete(state, &arguments).await,
+        "detect_language" => tool_detect_language(&arguments).await,
         "dag_get" => tool_dag_get(state).await,
         "notebook_save" => tool_notebook_save(state, &arguments).await,
         "notebook_load" => tool_notebook_load(state, &arguments).await,
@@ -395,7 +407,7 @@ async fn tool_cell_execute(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let code = args.get("code").and_then(|v| v.as_str()).ok_or("Missing 'code'")?;
-    let lang = args.get("lang").and_then(|v| v.as_str()).ok_or("Missing 'lang'")?;
+    let lang = args.get("lang").and_then(|v| v.as_str());
     let cell_id = args.get("cell_id").and_then(|v| v.as_str());
 
     let mut nb = state.notebook.lock().await;
@@ -425,7 +437,7 @@ async fn tool_cell_create(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let code = args.get("code").and_then(|v| v.as_str()).ok_or("Missing 'code'")?;
-    let lang = args.get("lang").and_then(|v| v.as_str()).ok_or("Missing 'lang'")?;
+    let lang = args.get("lang").and_then(|v| v.as_str());
     let after = args.get("after").and_then(|v| v.as_str());
 
     let mut nb = state.notebook.lock().await;
@@ -453,6 +465,14 @@ async fn tool_cell_delete(
 
     let mut nb = state.notebook.lock().await;
     let result = nb.delete_cell(cell_id)?;
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+async fn tool_detect_language(
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let code = args.get("code").and_then(|v| v.as_str()).ok_or("Missing 'code'")?;
+    let result = NotebookState::detect_language(code);
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 

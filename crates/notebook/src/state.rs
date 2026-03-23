@@ -3,9 +3,13 @@
 //! Wraps the reactive `Runtime` with cell ordering, human-readable ID
 //! mapping, and save/load/export operations. This is the single source of
 //! truth that all MCP tools operate on.
+//!
+//! Language detection: when `lang` is omitted or set to `"auto"`, the runtime's
+//! `detect_language` module infers the language from the code's first tokens.
 
 use notebook_publish::{Block, Document, OutputFormat};
 use notebook_runtime::cell::{Cell, CellLanguage};
+use notebook_runtime::detect::detect_language;
 use notebook_runtime::executor::Runtime;
 use notebook_runtime::{CellId, CellStatus};
 use serde::{Deserialize, Serialize};
@@ -34,7 +38,9 @@ pub struct ExecuteResult {
     pub cell_id: String,
     pub status: String,
     pub output: String,
+    pub output_mime: Option<String>,
     pub timing_ms: u64,
+    pub detected_lang: Option<String>,
     pub downstream_rerun: Vec<String>,
 }
 
@@ -45,6 +51,7 @@ pub struct CellInfo {
     pub lang: String,
     pub status: String,
     pub output: String,
+    pub output_mime: Option<String>,
     pub refs: Vec<String>,
     pub defs: Vec<String>,
     pub last_run_ms: u64,
@@ -62,6 +69,7 @@ pub struct CellSummary {
 #[derive(Serialize)]
 pub struct CreateResult {
     pub cell_id: String,
+    pub detected_lang: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +121,12 @@ pub struct LoadResult {
 pub struct ExportResult {
     pub exported: bool,
     pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct DetectResult {
+    pub detected: String,
+    pub confidence: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,16 +200,83 @@ impl NotebookState {
             .unwrap_or_default()
     }
 
+    fn cell_output_mime(cell: &Cell) -> Option<String> {
+        cell.output.as_ref().map(|o| o.mime_type.clone())
+    }
+
+    fn lang_str(lang: &CellLanguage) -> &'static str {
+        match lang {
+            CellLanguage::Python => "python",
+            CellLanguage::Sql => "sql",
+            CellLanguage::Cypher => "cypher",
+            CellLanguage::Gremlin => "gremlin",
+            CellLanguage::Sparql => "sparql",
+            CellLanguage::R => "r",
+            CellLanguage::Rust => "rust",
+            CellLanguage::Nars => "nars",
+            CellLanguage::Markdown => "markdown",
+        }
+    }
+
+    /// Resolve language from string, with auto-detection support.
+    /// If `lang` is `"auto"`, empty, or `None`, detect from code.
+    fn resolve_language(lang: Option<&str>, code: &str) -> Result<(CellLanguage, Option<String>), String> {
+        match lang {
+            Some(l) if !l.is_empty() && l != "auto" => {
+                let parsed = parse_language(l)?;
+                Ok((parsed, None))
+            }
+            _ => {
+                // Auto-detect from code.
+                if let Some(detected) = detect_language(code) {
+                    let name = match &detected {
+                        CellLanguage::Python => "python",
+                        CellLanguage::Sql => "sql",
+                        CellLanguage::Cypher => "cypher",
+                        CellLanguage::Gremlin => "gremlin",
+                        CellLanguage::Sparql => "sparql",
+                        CellLanguage::R => "r",
+                        CellLanguage::Rust => "rust",
+                        CellLanguage::Nars => "nars",
+                        CellLanguage::Markdown => "markdown",
+                    };
+                    Ok((detected, Some(name.to_string())))
+                } else {
+                    // Default to Python if detection fails.
+                    Ok((CellLanguage::Python, Some("python".to_string())))
+                }
+            }
+        }
+    }
+
+    // -- Language detection ---------------------------------------------------
+
+    /// Detect the language of a code string.
+    pub fn detect_language(code: &str) -> DetectResult {
+        if let Some(lang) = detect_language(code) {
+            DetectResult {
+                detected: Self::lang_str(&lang).to_string(),
+                confidence: "high",
+            }
+        } else {
+            DetectResult {
+                detected: "python".to_string(),
+                confidence: "low",
+            }
+        }
+    }
+
     // -- Cell CRUD -----------------------------------------------------------
 
     /// Create a new cell (does not execute).
+    /// If `lang` is `"auto"` or `None`, auto-detect from code.
     pub fn create_cell(
         &mut self,
         code: &str,
-        lang: &str,
+        lang: Option<&str>,
         after: Option<&str>,
     ) -> Result<CreateResult, String> {
-        let language = parse_language(lang)?;
+        let (language, detected) = Self::resolve_language(lang, code)?;
         let short = self.next_id();
         let cell = Cell::new(code, language);
         let uuid = cell.id;
@@ -215,7 +296,10 @@ impl NotebookState {
             self.cell_order.push(short.clone());
         }
 
-        Ok(CreateResult { cell_id: short })
+        Ok(CreateResult {
+            cell_id: short,
+            detected_lang: detected,
+        })
     }
 
     /// Get a cell's full state.
@@ -230,9 +314,10 @@ impl NotebookState {
         Ok(CellInfo {
             cell_id: short_id.to_string(),
             code: cell.code.clone(),
-            lang: format!("{:?}", cell.language).to_lowercase(),
+            lang: Self::lang_str(&cell.language).to_string(),
             status: Self::status_str(&cell.status).to_string(),
             output: Self::cell_output_text(cell),
+            output_mime: Self::cell_output_mime(cell),
             refs: cell.refs.iter().cloned().collect(),
             defs: cell.defs.iter().cloned().collect(),
             last_run_ms: 0,
@@ -248,7 +333,7 @@ impl NotebookState {
                 let cell = self.runtime.graph.get(uuid)?;
                 Some(CellSummary {
                     cell_id: short.clone(),
-                    lang: format!("{:?}", cell.language).to_lowercase(),
+                    lang: Self::lang_str(&cell.language).to_string(),
                     status: Self::status_str(&cell.status).to_string(),
                     defs: cell.defs.iter().cloned().collect(),
                     refs: cell.refs.iter().cloned().collect(),
@@ -278,7 +363,6 @@ impl NotebookState {
         };
 
         // Re-register to rebuild edges (defs/refs may have changed).
-        // We need to get the cell, update it, and re-register.
         let cell = self.runtime.graph.get(uuid).unwrap().clone();
         self.runtime.graph.register(Cell {
             id: uuid,
@@ -338,13 +422,17 @@ impl NotebookState {
     // -- Execution -----------------------------------------------------------
 
     /// Execute a cell (create if needed).
+    /// If `lang` is `"auto"`, empty, or `None`, auto-detect from code.
     pub async fn execute_cell(
         &mut self,
         code: &str,
-        lang: &str,
+        lang: Option<&str>,
         cell_id: Option<&str>,
     ) -> Result<ExecuteResult, String> {
         let start = std::time::Instant::now();
+
+        let (resolved_lang, detected) = Self::resolve_language(lang, code)?;
+        let lang_str = Self::lang_str(&resolved_lang);
 
         let short_id = if let Some(id) = cell_id {
             // Ensure the cell exists; update code if it does.
@@ -356,8 +444,7 @@ impl NotebookState {
                 id.to_string()
             } else {
                 // Create with the given ID.
-                let language = parse_language(lang)?;
-                let cell = Cell::new(code, language);
+                let cell = Cell::new(code, resolved_lang.clone());
                 let uuid = cell.id;
                 self.runtime.graph.register(cell);
                 self.id_map.insert(id.to_string(), uuid);
@@ -367,7 +454,7 @@ impl NotebookState {
             }
         } else {
             // Auto-generate.
-            let result = self.create_cell(code, lang, None)?;
+            let result = self.create_cell(code, Some(lang_str), None)?;
             result.cell_id
         };
 
@@ -375,11 +462,11 @@ impl NotebookState {
         let downstream = self.execute_and_collect(uuid).await;
         let elapsed = start.elapsed().as_millis() as u64;
 
-        let output = self
+        let (output, output_mime) = self
             .runtime
             .graph
             .get(uuid)
-            .map(|c| Self::cell_output_text(c))
+            .map(|c| (Self::cell_output_text(c), Self::cell_output_mime(c)))
             .unwrap_or_default();
 
         let status = self
@@ -394,7 +481,9 @@ impl NotebookState {
             cell_id: short_id,
             status,
             output,
+            output_mime,
             timing_ms: elapsed,
+            detected_lang: detected,
             downstream_rerun: downstream,
         })
     }
@@ -475,7 +564,7 @@ impl NotebookState {
                 Some(CellRecord {
                     id: short.clone(),
                     code: cell.code.clone(),
-                    lang: format!("{:?}", cell.language).to_lowercase(),
+                    lang: Self::lang_str(&cell.language).to_string(),
                     defs: cell.defs.iter().cloned().collect(),
                     refs: cell.refs.iter().cloned().collect(),
                     output: cell.output.as_ref().map(|o| o.data.clone()),
@@ -565,18 +654,29 @@ impl NotebookState {
             };
 
             // Add the code block.
-            let lang_str = format!("{:?}", cell.language).to_lowercase();
+            let lang_str = Self::lang_str(&cell.language);
             if cell.language == CellLanguage::Markdown {
                 blocks.push(Block::Markdown(cell.code.clone()));
             } else {
                 blocks.push(Block::Code {
-                    language: lang_str,
+                    language: lang_str.to_string(),
                     source: cell.code.clone(),
                 });
             }
 
             // Add output if present.
             if let Some(output) = &cell.output {
+                // If output is JSON with graph data, render as graph visualization.
+                if output.mime_type == "application/json" {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&output.data) {
+                        if parsed.get("nodes").is_some() && parsed.get("edges").is_some() {
+                            blocks.push(Block::GraphVisualization {
+                                graph_json: output.data.clone(),
+                            });
+                            continue;
+                        }
+                    }
+                }
                 blocks.push(Block::Output {
                     mime_type: output.mime_type.clone(),
                     data: output.data.clone(),
@@ -627,8 +727,8 @@ mod tests {
     #[test]
     fn create_and_list() {
         let mut state = NotebookState::new();
-        let r1 = state.create_cell("x = 1", "python", None).unwrap();
-        let r2 = state.create_cell("y = x", "python", Some(&r1.cell_id)).unwrap();
+        let r1 = state.create_cell("x = 1", Some("python"), None).unwrap();
+        let r2 = state.create_cell("y = x", Some("python"), Some(&r1.cell_id)).unwrap();
         assert_eq!(r1.cell_id, "c_001");
         assert_eq!(r2.cell_id, "c_002");
 
@@ -641,9 +741,9 @@ mod tests {
     #[test]
     fn delete_cell_removes_from_order() {
         let mut state = NotebookState::new();
-        state.create_cell("a", "rust", None).unwrap();
-        let r2 = state.create_cell("b", "rust", None).unwrap();
-        state.create_cell("c", "rust", None).unwrap();
+        state.create_cell("a", Some("rust"), None).unwrap();
+        let r2 = state.create_cell("b", Some("rust"), None).unwrap();
+        state.create_cell("c", Some("rust"), None).unwrap();
 
         state.delete_cell(&r2.cell_id).unwrap();
         let cells = state.list_cells();
@@ -658,5 +758,47 @@ mod tests {
         let dag = state.dag();
         assert!(dag.nodes.is_empty());
         assert!(dag.edges.is_empty());
+    }
+
+    #[test]
+    fn auto_detect_gremlin() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("g.V().hasLabel('person')", None, None).unwrap();
+        assert_eq!(r.detected_lang, Some("gremlin".to_string()));
+    }
+
+    #[test]
+    fn auto_detect_cypher() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("MATCH (n:Person) RETURN n", None, None).unwrap();
+        assert_eq!(r.detected_lang, Some("cypher".to_string()));
+    }
+
+    #[test]
+    fn auto_detect_sparql() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("SELECT ?s ?p ?o WHERE { ?s ?p ?o }", None, None).unwrap();
+        assert_eq!(r.detected_lang, Some("sparql".to_string()));
+    }
+
+    #[test]
+    fn auto_detect_r() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("paths %>% filter(weight > 0.8)", None, None).unwrap();
+        assert_eq!(r.detected_lang, Some("r".to_string()));
+    }
+
+    #[test]
+    fn auto_detect_markdown() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("# Hello World", None, None).unwrap();
+        assert_eq!(r.detected_lang, Some("markdown".to_string()));
+    }
+
+    #[test]
+    fn explicit_lang_overrides_detect() {
+        let mut state = NotebookState::new();
+        let r = state.create_cell("# Hello World", Some("python"), None).unwrap();
+        assert_eq!(r.detected_lang, None); // No detection when explicitly set
     }
 }

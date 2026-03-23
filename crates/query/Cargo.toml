@@ -18,3 +18,5 @@ arrow-schema = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
 lance-graph = { workspace = true }
+uuid = { workspace = true }
+futures-util = "0.3"

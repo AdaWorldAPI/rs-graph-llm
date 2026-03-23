@@ -34,7 +34,7 @@ impl CypherEngine {
 
 #[async_trait]
 impl QueryEngine for CypherEngine {
-    async fn execute(&self, query: &str) -> Result<QueryResult, QueryError> {
+    async fn execute(&self, _query: &str) -> Result<QueryResult, QueryError> {
         // TODO: Implement Bolt protocol client
         // For now, return an error indicating this is not yet implemented
         Err(QueryError::Unsupported(

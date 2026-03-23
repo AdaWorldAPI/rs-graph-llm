@@ -7,7 +7,7 @@
 //! - Rust: compile and run via evcxr or similar
 //! - Markdown: render to HTML (no execution)
 
-use crate::cell::{Cell, CellLanguage};
+use crate::cell::CellLanguage;
 use crate::dataflow::DataflowGraph;
 use crate::{CellId, CellOutput, CellStatus, Notification};
 use std::collections::HashMap;
@@ -48,6 +48,28 @@ pub enum ExecutionError {
     UnsupportedLanguage { language: CellLanguage },
 }
 
+/// A built-in executor for Markdown cells (renders to HTML, no execution).
+pub struct MarkdownExecutor;
+
+#[async_trait::async_trait]
+impl CellExecutor for MarkdownExecutor {
+    async fn execute(
+        &self,
+        code: &str,
+        _variables: &HashMap<String, serde_json::Value>,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        // Markdown cells just pass through — the publisher renders them.
+        Ok(ExecutionResult {
+            output: Some(CellOutput {
+                mime_type: "text/markdown".to_string(),
+                data: code.to_string(),
+            }),
+            console: vec![],
+            defs: HashMap::new(),
+        })
+    }
+}
+
 /// The runtime that manages cell execution and reactive updates.
 pub struct Runtime {
     /// The dependency graph.
@@ -62,17 +84,25 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        Self {
+        let mut rt = Self {
             graph: DataflowGraph::new(),
             executors: HashMap::new(),
             variables: HashMap::new(),
             notifications: Vec::new(),
-        }
+        };
+        // Register the built-in Markdown executor.
+        rt.register_executor(CellLanguage::Markdown, Box::new(MarkdownExecutor));
+        rt
     }
 
     /// Register an executor for a language.
     pub fn register_executor(&mut self, language: CellLanguage, executor: Box<dyn CellExecutor>) {
         self.executors.insert(language, executor);
+    }
+
+    /// Check if an executor is registered for a language.
+    pub fn has_executor(&self, language: &CellLanguage) -> bool {
+        self.executors.contains_key(language)
     }
 
     /// Execute a cell and all its transitive dependents.

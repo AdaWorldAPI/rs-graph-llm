@@ -7,9 +7,9 @@
 
 pub mod cell;
 pub mod dataflow;
+pub mod detect;
 pub mod executor;
 
-use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 /// Unique identifier for a cell.
