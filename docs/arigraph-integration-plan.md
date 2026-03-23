@@ -43,6 +43,8 @@ graph-flow-memory/
 
 **Dependencies**: graph-flow (Context, Task trait), rig-core (LLM), lance (optional vector store), ndarray (embeddings)
 
+> **Cross-repo note (2026-03-22):** `ndarray` refers to `AdaWorldAPI/ndarray` (fork with 55 HPC modules including Fingerprint, Cascade, BF16Truth). It provides batch cosine similarity, cascade search, and Hamming distance for embedding-guided BFS. `lance` storage is provided by `AdaWorldAPI/lance-graph` which includes the SPO triple store and semiring algebra. The `Triplet::to_spo()` bridge in Phase 1 will use ndarray's `Fingerprint<256>` type for projection into fingerprint space.
+
 ### Integration Point
 
 ```

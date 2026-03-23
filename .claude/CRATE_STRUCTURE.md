@@ -67,3 +67,17 @@ mcp = ["dep:reqwest"]       # MCP tool calling
 lance = ["dep:lance"]       # Lance dataset storage
 full = ["rig", "mcp", "lance"]
 ```
+
+### Status Update (2026-03-22)
+
+**lance-graph current state** (verified):
+- `crates/lance-graph/` — 19,262 lines, Cypher parser + DataFusion planner
+- `crates/bgz17/` — 3,743 lines, 121 tests, palette semirings + container
+- `crates/lance-graph-codec-research/` — ZeckBF17, accumulator, diamond
+- Phase 1 (blasgraph CSC/Planner): DONE
+- Phase 2 (bgz17 container/semiring): DONE
+- Phase 3-4: NOT STARTED
+
+**Migration to lance-graph umbrella** (Phase 2-5 from plan above):
+- Deferred until rs-graph-llm's graph-flow-memory crate is stable
+- Decision point: After Plateau 1 sanity gate in master INTEGRATION_PLAN.md
