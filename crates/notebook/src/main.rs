@@ -8,23 +8,28 @@
 //! - notebook-kernel: Jupyter kernel protocol (for R via IRkernel)
 //! - notebook-publish: document publisher (quarto transcode)
 //!
-//! The binary:
-//! 1. Serves marimo's JS/React frontend as static files
-//! 2. Handles WebSocket connections for cell execution
-//! 3. Dispatches cell code to the appropriate engine
-//! 4. Publishes notebooks to PDF/HTML
+//! The ONLY API is MCP over SSE.  Claude Code connects with:
+//! ```json
+//! { "type": "url", "url": "http://localhost:2718/mcp/sse", "name": "notebook" }
+//! ```
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use std::sync::Arc;
+
+use axum::routing::{get, post};
+use axum::Router;
+use dashmap::DashMap;
+use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
+mod mcp;
 mod routes;
+mod state;
+
+use mcp::AppState;
+use state::NotebookState;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -36,10 +41,18 @@ async fn main() {
 
     tracing::info!("Starting polyglot notebook on {addr}");
 
+    let shared = AppState {
+        notebook: Arc::new(Mutex::new(NotebookState::new())),
+        sessions: Arc::new(DashMap::new()),
+    };
+
     let app = Router::new()
-        .route("/api/health", get(routes::health))
-        .route("/api/kernel/execute", post(routes::execute))
-        .route("/api/kernel/status", get(routes::status))
+        // Health probe (the only non-MCP endpoint).
+        .route("/health", get(routes::health))
+        // MCP SSE transport.
+        .route("/mcp/sse", get(mcp::sse_handler))
+        .route("/mcp/message", post(mcp::message_handler))
+        .with_state(shared)
         .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -47,6 +60,7 @@ async fn main() {
         .expect("Failed to bind");
 
     tracing::info!("Notebook ready at http://{addr}");
+    tracing::info!("MCP endpoint: http://{addr}/mcp/sse");
 
     axum::serve(listener, app)
         .await
