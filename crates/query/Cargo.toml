@@ -1,0 +1,20 @@
+[package]
+name = "notebook-query"
+version = "0.1.0"
+edition = "2021"
+description = "Graph query engines: Cypher, Gremlin, SPARQL, NARS (graph-notebook transcode)"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true }
+lance-graph = { workspace = true }
