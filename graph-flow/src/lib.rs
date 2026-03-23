@@ -200,14 +200,15 @@ pub use error::{GraphError, Result};
 pub use graph::{ExecutionResult, ExecutionStatus, Graph, GraphBuilder};
 pub use runner::FlowRunner;
 pub use storage::{
-    GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session, SessionStorage,
+    Checkpoint, GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session,
+    SessionStorage,
 };
 pub use storage_postgres::PostgresSessionStorage;
 pub use storage_sqlite::SqliteSessionStorage;
 pub use task::{NextAction, Task, TaskResult};
 pub use fanout::FanOutTask;
 pub use streaming::{StreamChunk, StreamMode, StreamingRunner, StreamingTask};
-pub use typed_context::{State, TypedContext};
+pub use typed_context::{State, TypedContext, TypedContextBuilder, TypedTask, TypedTaskAdapter, TYPED_STATE_KEY};
 pub use subgraph::SubgraphTask;
 pub use mcp_tool::{McpToolConfig, MockMcpToolTask};
 #[cfg(feature = "mcp")]
