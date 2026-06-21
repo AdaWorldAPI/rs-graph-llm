@@ -5,6 +5,9 @@ members = [
     "examples",
     "recommendation-service",
     "medical-document-service",
+    # Cognitive Compilation: graph-flow Tasks for the Elixir-template loop
+    # (additive; template representation/runtime/compiler live in AdaWorldAPI/lance-graph).
+    "crates/template-task",
 ]
 resolver = "2"
 

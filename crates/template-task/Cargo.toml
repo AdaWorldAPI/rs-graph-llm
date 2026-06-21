@@ -1,0 +1,15 @@
+[package]
+name = "template-task"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "graph-flow Tasks that drive the Cognitive Compilation Elixir-template loop: run a compiled (Elixir-shaped) template as the deterministic reflex, or escalate to template synthesis. Additive + isolated so it survives an upstream reset and cherry-picks back cleanly. The template representation/runtime/compiler live in AdaWorldAPI/lance-graph (elixir-template / template-runtime / cognitive-compiler)."
+
+[dependencies]
+graph-flow = { path = "../../graph-flow" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
