@@ -19,13 +19,13 @@
 //! cognitive-compiler → template-equivalence step) rests on surrealdb #50's
 //! transparent versioning.
 //!
-//! Self-contained + cherry-pickable (sibling of `template-task`). Content
-//! addressing uses a local `fnv1a` mirroring `lance_graph_contract::hash::fnv1a`;
-//! migrate to `lance_graph_contract::content_store::{ContentId, SourceSpan}` once
-//! that contract lands.
+//! Content addressing + the citation predicate use the canonical
+//! `lance_graph_contract::content_store::{ContentId, SourceSpan}` (the contract
+//! merged in lance-graph #581) — the local `fnv1a` stand-in has been retired.
 
 use async_trait::async_trait;
 use graph_flow::{Context, NextAction, Result, Task, TaskResult};
+use lance_graph_contract::content_store::{ContentId, SourceSpan};
 
 /// Raw observation text to record.
 pub const KEY_OBSERVATION: &str = "observation";
@@ -46,19 +46,12 @@ pub const KEY_PUBLIC_INTEREST: &str = "public_interest_reason";
 /// Citation-gate outcome (written by [`CiteGateTask`]).
 pub const KEY_CITE_STATUS: &str = "cite_status";
 
-/// Canonical content address — `fnv1a`-64 of the bytes.
-///
-/// Mirrors `lance_graph_contract::hash::fnv1a`: stable across versions/platforms
-/// (unlike `DefaultHasher`, which must never key a content address). `0` is the
-/// reserved empty/sentinel (no content).
+/// Canonical content address — the raw `u64` of [`ContentId::of`] (the workspace
+/// `fnv1a`, stable across versions; `0` is the reserved empty/sentinel). Kept as
+/// a `u64` for `Context` storage; prefer [`ContentId`] directly in new code.
 #[must_use]
 pub fn content_id(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    ContentId::of(bytes).0
 }
 
 /// Record one observation as an episodic vertex and content-address its source.
@@ -149,8 +142,8 @@ impl Task for CiteGateTask {
             let cid = fields.next().and_then(parse_u64).unwrap_or(0);
             let start = fields.next().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0);
             let end = fields.next().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0);
-            // is_cited: non-sentinel content + non-empty span.
-            if cid == 0 || end <= start {
+            // The contract's canonical predicate: non-sentinel content + non-empty span.
+            if !SourceSpan::new(ContentId(cid), start, end).is_cited() {
                 context.set(KEY_CITE_STATUS, "blocked_uncited_claim").await;
                 return Ok(TaskResult::new(
                     Some(format!("OSINT gate: uncited claim: {claim}")),

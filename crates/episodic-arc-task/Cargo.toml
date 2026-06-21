@@ -7,6 +7,9 @@ description = "graph-flow Tasks for the AriGraph/OSINT episodic arc — the 'tra
 
 [dependencies]
 graph-flow = { path = "../../graph-flow" }
+# AdaWorldAPI fork: the canonical content-addressed store contract (zero-dep).
+# Provides ContentId/SourceSpan — retires this crate's local fnv1a stand-in.
+lance-graph-contract = { git = "https://github.com/AdaWorldAPI/lance-graph", branch = "main", default-features = false }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
