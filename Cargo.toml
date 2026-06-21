@@ -8,6 +8,9 @@ members = [
     # Cognitive Compilation: graph-flow Tasks for the Elixir-template loop
     # (additive; template representation/runtime/compiler live in AdaWorldAPI/lance-graph).
     "crates/template-task",
+    # Cognitive Compilation: AriGraph/OSINT episodic arc (the training-wheels half).
+    # Additive + isolated (cherry-pickable); drives the rig store adapters.
+    "crates/episodic-arc-task",
 ]
 resolver = "2"
 

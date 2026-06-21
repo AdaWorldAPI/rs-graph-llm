@@ -1,0 +1,15 @@
+[package]
+name = "episodic-arc-task"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "graph-flow Tasks for the AriGraph/OSINT episodic arc — the 'training wheels' half of the Cognitive Compilation loop. Record observations as episodic vertices + content-addressed cited SPO, retrieve past episodes, and fail-closed citation gate. Drives rig's store adapters (rig-lancedb episodic + rig-surrealdb kv-lance semantic/versioned arc). Self-contained + cherry-pickable (sibling of template-task)."
+
+[dependencies]
+graph-flow = { path = "../../graph-flow" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
