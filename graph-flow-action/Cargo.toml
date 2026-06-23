@@ -1,0 +1,11 @@
+[package]
+name = "graph-flow-action"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "The kgV ActionHandler — the minimal executor plug (HIRO/Bardioc/rig dock by impl ActionHandler) + the cold-path/MUL/hot dispatch chain. Thinking stays above; a ThinkingStyle import here is a structural violation (I-ACTIONHANDLER-IS-KGV-NOT-CHOKEPOINT)."
+
+[dependencies]
+# Zero-dep contract only. The whole cold-path/MUL lifecycle is in
+# contract::action::ActionInvocation::commit; this crate adds the kgV plug.
+lance-graph-contract = { path = "../../lance-graph/crates/lance-graph-contract" }
