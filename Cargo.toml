@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "graph-flow",
+    "graph-flow-action",   # kgV ActionHandler + cold-path/MUL/hot dispatch
     "insurance-claims-service",
     "examples",
     "recommendation-service",
