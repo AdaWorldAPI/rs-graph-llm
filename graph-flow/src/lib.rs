@@ -172,6 +172,8 @@ pub mod graph;
 pub mod runner;
 pub mod storage;
 pub mod storage_postgres;
+#[cfg(feature = "surreal-lance")]
+pub mod storage_surreal;
 pub mod task;
 pub mod fanout;
 
@@ -184,6 +186,8 @@ pub use storage::{
     GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session, SessionStorage,
 };
 pub use storage_postgres::PostgresSessionStorage;
+#[cfg(feature = "surreal-lance")]
+pub use storage_surreal::SurrealSessionStorage;
 pub use task::{NextAction, Task, TaskResult};
 pub use fanout::FanOutTask;
 

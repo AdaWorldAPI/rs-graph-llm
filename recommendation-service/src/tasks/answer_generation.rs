@@ -38,7 +38,7 @@ impl Task for AnswerGenerationTask {
         );
 
         // Get the full chat history for conversational memory
-        let history = context.get_rig_messages().await;
+        let mut history = context.get_rig_messages().await;
 
         let agent = get_llm_agent()
             .map_err(|e| TaskExecutionFailed(format!("Failed to initialize LLM agent: {}", e)))?;
@@ -70,7 +70,7 @@ impl Task for AnswerGenerationTask {
         };
 
         let answer = agent
-            .chat(&prompt, history)
+            .chat(&prompt, &mut history)
             .await
             .map_err(|e| TaskExecutionFailed(format!("LLM chat failed: {}", e)))?;
 

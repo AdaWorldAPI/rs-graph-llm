@@ -25,7 +25,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 dashmap = "6.1"
-rig-core = "0.35.0"
+# Bolt to the AdaWorldAPI/rig fork (rig-core 0.39) instead of the crates.io 0.35
+# build. The fork carries the SurrealDB-on-Lance (kv-lance) + rig-lancedb store
+# adapters the cognitive-compilation loop drives, and keeps the `Message::system`
+# constructor graph-flow's chat-history conversion needs.
+#
+# Aliased to `rig` (package = "rig-core"): the fork's rig-core sets
+# `[lib] name = "rig_core"`, whereas crates.io 0.35 used `name = "rig"`, so the
+# `use rig::…` call sites only keep resolving if the dependency is imported under
+# the name `rig`. The rename fixes that for every member at the Cargo layer.
+rig = { git = "https://github.com/AdaWorldAPI/rig", branch = "main", package = "rig-core" }
 axum = "0.8.4"
 tower = "0.5"
 tower-http = { version = "0.6.6", features = ["trace", "cors"] }

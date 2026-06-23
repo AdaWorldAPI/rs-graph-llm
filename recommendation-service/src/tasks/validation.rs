@@ -56,7 +56,7 @@ impl Task for ValidationTask {
             .map_err(|e| TaskExecutionFailed(format!("Failed to initialize LLM agent: {}", e)))?;
 
         let raw = agent
-            .chat(&prompt, Vec::<Message>::new())
+            .chat(&prompt, &mut Vec::<Message>::new())
             .await
             .map_err(|e| TaskExecutionFailed(format!("LLM chat failed: {}", e)))?;
 

@@ -31,7 +31,7 @@ impl Task for QueryRefinementTask {
                     Rewrite the following user query so that it is optimised for vector search. Only return the rewritten query.
                     Query: {user_query}"#
                 ),
-                Vec::<Message>::new(),
+                &mut Vec::<Message>::new(),
             )
             .await
             .map_err(|e| TaskExecutionFailed(format!("LLM chat failed: {}", e)))?

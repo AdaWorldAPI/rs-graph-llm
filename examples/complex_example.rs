@@ -61,7 +61,7 @@ impl Task for SentimentAnalysisTask {
 
         // We are not using chat history here for simplicity, but rig expects a vector – supply an empty one.
         let response = agent
-            .chat(&user_input, Vec::<Message>::new())
+            .chat(&user_input, &mut Vec::<Message>::new())
             .await
             .map_err(|e| graph_flow::GraphError::TaskExecutionFailed(e.to_string()))?;
 

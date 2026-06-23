@@ -30,8 +30,13 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dashmap = "6.1"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "json", "macros", "uuid"] }
-rig-core = { workspace = true, optional = true }
+rig = { workspace = true, optional = true } # package = "rig-core", aliased to `rig` (fork lib name is rig_core)
+# SurrealDB-on-Lance (kv-lance) backend for SurrealSessionStorage. The fork adds
+# the `engine::local::Lance` backend; optional + off by default because it pulls
+# the heavy Lance tree. Enable with `--features surreal-lance`.
+surrealdb = { git = "https://github.com/AdaWorldAPI/surrealdb", branch = "main", optional = true, default-features = false, features = ["kv-lance"] }
 
 [features]
 default = []
-rig = ["dep:rig-core"]
+rig = ["dep:rig"]
+surreal-lance = ["dep:surrealdb"]
