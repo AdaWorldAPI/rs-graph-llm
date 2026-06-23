@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "graph-flow",
-    "graph-flow-action",   # kgV ActionHandler + cold-path/MUL/hot dispatch
+    "graph-flow-action",   # kgV ActionHandler + cold-path/MUL/hot dispatch (inner: one action)
+    "graph-flow-kanban",   # outer planning-phase envelope: one Rubicon cycle over contract::kanban
     "insurance-claims-service",
     "examples",
     "recommendation-service",
