@@ -293,3 +293,201 @@ mod tests {
         assert_eq!(i.state, ActionState::Pending); // untouched — never committed
     }
 }
+
+use lance_graph_contract::rbac::{ActorId, ClassRbac};
+
+/// Run an action through **routing → cold floor (ClassRbac path) → hot path**.
+///
+/// The ClassRbac-driven sibling of [`dispatch`]: identical three-layer structure but
+/// the cold floor is [`ActionInvocation::commit_via`] — which resolves RBAC through
+/// the grant table (`ClassRbac::actor_roles` → `ClassRbac::grant_permits`) rather
+/// than the `ActorContext` role-set. The admin must hold an explicit granted role on
+/// the action's class; no `ActorContext` fallback here.
+///
+/// 1. **Routing**: `capability` ∧ `applicability`. False ⇒ [`HandlerOutcome::NotApplicable`].
+/// 2. **Cold floor** ([`ActionInvocation::commit_via`]): def-match → ClassRbac grant →
+///    state guard → MUL impact. Returns [`ActionState`].
+/// 3. **Hot path**: only on `Committed` do we call [`ActionHandler::handle`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn dispatch_via<H: ActionHandler, R: ClassRbac>(
+    handler: &H,
+    rbac: &R,
+    actor_id: ActorId<'_>,
+    gate: &GateDecision,
+    action: &ActionDef,
+    inv: &mut ActionInvocation,
+    guard_field_value: Option<&str>,
+    now_millis: u64,
+) -> HandlerOutcome {
+    if !handler.capability(action) || !handler.applicability(inv) {
+        return HandlerOutcome::NotApplicable;
+    }
+    match inv.commit_via(action, rbac, actor_id, gate, guard_field_value, now_millis) {
+        ActionState::Committed => handler.handle(action, inv),
+        ActionState::Pending => HandlerOutcome::Postponed,
+        ActionState::Cancelled => HandlerOutcome::Escalated,
+        ActionState::Failed => HandlerOutcome::Denied,
+    }
+}
+
+#[cfg(test)]
+mod dispatch_via_tests {
+    use super::*;
+    use lance_graph_contract::action::StateGuard;
+    use lance_graph_contract::canonical_node::NodeGuid;
+    use lance_graph_contract::kanban::ExecTarget;
+    use lance_graph_contract::rbac::{ActorId, ClassId, ClassRbac, Operation, RoleId};
+
+    const PATIENT: u32 = 0x0901;
+
+    struct EchoHandler {
+        can: bool,
+    }
+    impl ActionHandler for EchoHandler {
+        fn configuration(&self) -> u32 {
+            0x0B01
+        }
+        fn capability(&self, _a: &ActionDef) -> bool {
+            self.can
+        }
+        fn applicability(&self, _inv: &ActionInvocation) -> bool {
+            true
+        }
+        fn handle(&self, _a: &ActionDef, _inv: &mut ActionInvocation) -> HandlerOutcome {
+            HandlerOutcome::Done
+        }
+    }
+
+    /// Minimal ClassRbac fixture: "dr-house" → physician → ACT on PATIENT.
+    struct FixtureRbac;
+    impl ClassRbac for FixtureRbac {
+        fn actor_roles(&self, actor: ActorId<'_>) -> &[RoleId] {
+            match actor {
+                "dr-house" => &["physician"],
+                _ => &[],
+            }
+        }
+        fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
+            role == "physician"
+                && class as u16 == PATIENT as u16
+                && matches!(op, Operation::Act { .. })
+        }
+    }
+
+    fn def(required_role: Option<&'static str>, guard: Option<StateGuard>) -> ActionDef {
+        ActionDef {
+            predicate: "approve",
+            object_class: PATIENT,
+            exec: ExecTarget::Native,
+            guard,
+            required_role,
+            overrides: None,
+        }
+    }
+
+    fn inv() -> ActionInvocation {
+        ActionInvocation::pending(
+            PATIENT,
+            "approve",
+            NodeGuid::new(PATIENT, 0, 0, 0, 0, 0),
+            1,
+            0,
+            0,
+        )
+    }
+
+    #[test]
+    fn via_authorized_flow_commits_and_handles() {
+        let h = EchoHandler { can: true };
+        let mut i = inv();
+        let out = dispatch_via(
+            &h,
+            &FixtureRbac,
+            "dr-house",
+            &GateDecision::Flow,
+            &def(Some("physician"), None),
+            &mut i,
+            None,
+            1000,
+        );
+        assert_eq!(out, HandlerOutcome::Done);
+        assert_eq!(i.state, ActionState::Committed);
+    }
+
+    #[test]
+    fn via_ungranted_actor_denied() {
+        let h = EchoHandler { can: true };
+        let mut i = inv();
+        let out = dispatch_via(
+            &h,
+            &FixtureRbac,
+            "unknown-user", // not in fixture → no roles → no grant
+            &GateDecision::Flow,
+            &def(Some("physician"), None),
+            &mut i,
+            None,
+            1000,
+        );
+        assert_eq!(out, HandlerOutcome::Denied);
+        assert_eq!(i.state, ActionState::Failed);
+    }
+
+    #[test]
+    fn via_mul_hold_postpones() {
+        let h = EchoHandler { can: true };
+        let mut i = inv();
+        let out = dispatch_via(
+            &h,
+            &FixtureRbac,
+            "dr-house",
+            &GateDecision::Hold {
+                reason: "uncertain".into(),
+            },
+            &def(None, None),
+            &mut i,
+            None,
+            1000,
+        );
+        assert_eq!(out, HandlerOutcome::Postponed);
+        assert_eq!(i.state, ActionState::Pending);
+    }
+
+    #[test]
+    fn via_mul_block_escalates() {
+        let h = EchoHandler { can: true };
+        let mut i = inv();
+        let out = dispatch_via(
+            &h,
+            &FixtureRbac,
+            "dr-house",
+            &GateDecision::Block {
+                reason: "veto".into(),
+            },
+            &def(None, None),
+            &mut i,
+            None,
+            1000,
+        );
+        assert_eq!(out, HandlerOutcome::Escalated);
+        assert_eq!(i.state, ActionState::Cancelled);
+    }
+
+    #[test]
+    fn via_not_applicable_never_consults_cold_path() {
+        let h = EchoHandler { can: false };
+        let mut i = inv();
+        let out = dispatch_via(
+            &h,
+            &FixtureRbac,
+            "dr-house",
+            &GateDecision::Flow,
+            &def(None, None),
+            &mut i,
+            None,
+            1000,
+        );
+        assert_eq!(out, HandlerOutcome::NotApplicable);
+        assert_eq!(i.state, ActionState::Pending); // untouched
+    }
+}

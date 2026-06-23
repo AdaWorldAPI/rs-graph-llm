@@ -48,6 +48,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod orchestrate;
+
 use lance_graph_contract::collapse_gate::MailboxId;
 use lance_graph_contract::kanban::{ExecTarget, KanbanColumn, KanbanMove, RubiconTransitionError};
 use lance_graph_contract::mul::GateDecision;
