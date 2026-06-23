@@ -1,0 +1,13 @@
+[package]
+name = "graph-flow-kanban"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "The outer planning-phase envelope — one mailbox's Rubicon kanban cycle (Planning→CognitiveWork→Evaluation→{Commit|Plan|Prune}) advancing on MUL GateDecisions, carrying the precipitated PlanResult. The thinking style (i4 32-D), the Rung depth, and the ExecTarget (Native/JIT/SurrealQL/Elixir low-code) ride INSIDE the envelope; it never flattens them. Sibling to graph-flow-action (the inner hot-path executor)."
+
+[dependencies]
+# Zero-dep contract only — symmetric with graph-flow-action. The kanban
+# lifecycle DAG + the MUL→phase gate live in contract::kanban; the plan (with
+# the i4-32D thinking style + Rung) in contract::plan. rs-graph-llm's graph-flow
+# composes this outer envelope with the inner graph-flow-action executor.
+lance-graph-contract = { path = "../../lance-graph/crates/lance-graph-contract" }
