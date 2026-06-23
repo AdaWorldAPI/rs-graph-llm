@@ -30,8 +30,8 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dashmap = "6.1"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "json", "macros", "uuid"] }
-rig-core = { workspace = true, optional = true }
+rig = { workspace = true, optional = true } # package = "rig-core", aliased to `rig` (fork lib name is rig_core)
 
 [features]
 default = []
-rig = ["dep:rig-core"]
+rig = ["dep:rig"]
