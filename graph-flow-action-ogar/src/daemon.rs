@@ -40,9 +40,10 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use graph_flow_action::HandlerOutcome;
-use lance_graph_contract::action::{ActionDef, ActionInvocation};
+use lance_graph_contract::action::{actions_for, ActionDef, ActionInvocation, ClassActions};
 use lance_graph_contract::canonical_node::NodeGuid;
 use lance_graph_contract::mul::GateDecision;
+use lance_graph_contract::ogar_codebook::canonical_concept_id;
 use lance_graph_contract::rbac::ClassRbac;
 use ogar_from_schema::action_ws::{
     bind_parameters, validate_id, CapabilityExecutor, MAX_RESULT_LEN,
@@ -376,6 +377,87 @@ impl<X: ExecutorRegistry> CapabilityExecutor for RegistryExecutor<'_, X> {
         bound: &[(String, String)],
     ) -> Result<Vec<(String, String)>, String> {
         self.registry.run(self.runner, capability, bound)
+    }
+}
+
+/// A [`ClassResolver`] backed by OGAR's canonical action manifest
+/// ([`actions_for`] over a generated `&[ClassActions]`) — the production resolver:
+/// the demo's hand-written match replaced by OGAR's `classid → ClassActions` DO
+/// surface. It composes three canonical reads:
+/// - **classid → `ActionDef`** — [`actions_for`] (the OGAR-generated DO manifest,
+///   zero-fallback).
+/// - **classid → [`RunnerKind`]** — the class's execution kind (a machine you
+///   shell into is `Native`/`Ssh`; a service is `Rest`). Registered per classid.
+/// - **capability → signature** — the bound [`ActionParam`] list from B2-lift's
+///   `parse_capabilities`. Registered per capability.
+///
+/// The target string is read as a canonical 32-hex node GUID (its first 8 hex are
+/// the classid, per the OGAR GUID canon) or a canonical concept name (resolved via
+/// `canonical_concept_id`).
+pub struct OgarResolver {
+    actions: &'static [ClassActions],
+    runners: BTreeMap<u32, RunnerKind>,
+    signatures: BTreeMap<String, Vec<ActionParam>>,
+}
+
+impl OgarResolver {
+    /// Build a resolver over an OGAR-generated `actions` manifest (`classid →
+    /// ClassActions`). Register runners + signatures with the builders below.
+    #[must_use]
+    pub fn new(actions: &'static [ClassActions]) -> Self {
+        Self {
+            actions,
+            runners: BTreeMap::new(),
+            signatures: BTreeMap::new(),
+        }
+    }
+
+    /// Declare which [`RunnerKind`] a class executes on (builder).
+    #[must_use]
+    pub fn with_runner(mut self, classid: u32, runner: RunnerKind) -> Self {
+        self.runners.insert(classid, runner);
+        self
+    }
+
+    /// Declare a capability's bound parameter signature (builder) — from B2-lift's
+    /// `parse_capabilities` (`ConcreteCapability::params`).
+    #[must_use]
+    pub fn with_signature(
+        mut self,
+        capability: impl Into<String>,
+        signature: Vec<ActionParam>,
+    ) -> Self {
+        self.signatures.insert(capability.into(), signature);
+        self
+    }
+}
+
+/// Read a target's classid: a canonical 32-hex node GUID (first 8 hex = classid,
+/// per the OGAR GUID canon) or a canonical concept name (via the codebook).
+fn target_classid(target: &str) -> Option<u32> {
+    if target.len() >= 8 && target.as_bytes()[..8].iter().all(u8::is_ascii_hexdigit) {
+        u32::from_str_radix(&target[..8], 16).ok()
+    } else {
+        canonical_concept_id(target).map(u32::from)
+    }
+}
+
+impl ClassResolver for OgarResolver {
+    fn resolve(&self, target: Option<&str>, capability: &str) -> Option<ResolvedAction<'_>> {
+        let classid = target_classid(target?)?;
+        // classid → the class's ActionDefs (canonical, zero-fallback) → the one
+        // whose predicate is this capability.
+        let action = actions_for(self.actions, classid)
+            .iter()
+            .find(|a| a.predicate == capability)?;
+        // capability → signature (B2-lift); classid → runner (the class's kind).
+        let signature = self.signatures.get(capability)?;
+        let runner = *self.runners.get(&classid)?;
+        Some(ResolvedAction {
+            action,
+            signature,
+            runner,
+        })
     }
 }
 
@@ -1040,5 +1122,115 @@ mod tests {
         let frames = d.react(&targeted_submit("app:req-dddddd", "unknown-host", "echo x"));
         assert_eq!(frames.len(), 1);
         assert_eq!(parse(&frames[0])["type"], "negativeAcknowledged");
+    }
+
+    // The PRODUCTION resolver: OgarResolver over a canonical `&[ClassActions]`
+    // manifest (`actions_for`) — the same surface OGAR generates from a class's
+    // DO arm. No hand-written match; the classid drives everything.
+    const MACHINE_ACTIONS: &[ActionDef] = &[ActionDef {
+        predicate: "ExecuteCommand",
+        object_class: MARS_MACHINE,
+        exec: ExecTarget::Native,
+        guard: None,
+        required_role: Some("automation_operator"),
+        overrides: None,
+    }];
+    const RESOURCE_ACTIONS: &[ActionDef] = &[ActionDef {
+        predicate: "ExecuteCommand",
+        object_class: MARS_RESOURCE,
+        exec: ExecTarget::Native,
+        guard: None,
+        required_role: Some("automation_operator"),
+        overrides: None,
+    }];
+    const ACTION_REGISTRY: &[ClassActions] = &[
+        ClassActions {
+            classid: MARS_MACHINE,
+            actions: MACHINE_ACTIONS,
+        },
+        ClassActions {
+            classid: MARS_RESOURCE,
+            actions: RESOURCE_ACTIONS,
+        },
+    ];
+
+    /// The grail through the PRODUCTION resolver: `OgarResolver` resolves the
+    /// class from the target's concept name via the canonical `actions_for`
+    /// manifest, and the runner from the class — `mars_machine` → native runs the
+    /// real command; `mars_resource` → REST. Same capability, zero daemon change,
+    /// no hand-written resolution.
+    #[test]
+    fn ogar_resolver_drives_the_grail_via_actions_for() {
+        let resolver = OgarResolver::new(ACTION_REGISTRY)
+            .with_runner(MARS_MACHINE, RunnerKind::Native)
+            .with_runner(MARS_RESOURCE, RunnerKind::Rest)
+            .with_signature(
+                "ExecuteCommand",
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }],
+            );
+        let auth = Auth::new("ops-1", "tok");
+        let d = ResolvingDaemon::new(
+            resolver,
+            DemoRegistry,
+            GrailRbac,
+            &auth,
+            GateDecision::Flow,
+            1000,
+        );
+
+        // Target by concept name → canonical_concept_id → classid → actions_for.
+        let fa = d.react(&targeted_submit(
+            "app:req-eeeeee",
+            "mars_machine",
+            "echo canon",
+        ));
+        let res_a: serde_json::Value =
+            serde_json::from_str(parse(&fa[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res_a["output"], "canon");
+
+        let fb = d.react(&targeted_submit(
+            "app:req-ffffff",
+            "mars_resource",
+            "echo canon",
+        ));
+        let res_b: serde_json::Value =
+            serde_json::from_str(parse(&fb[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res_b["ran"], "rest");
+    }
+
+    /// A GUID-shaped target resolves by its 8-hex classid prefix (the OGAR GUID
+    /// canon), not just by concept name.
+    #[test]
+    fn ogar_resolver_reads_the_classid_prefix_of_a_guid() {
+        let resolver = OgarResolver::new(ACTION_REGISTRY)
+            .with_runner(MARS_MACHINE, RunnerKind::Native)
+            .with_signature(
+                "ExecuteCommand",
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }],
+            );
+        let auth = Auth::new("ops-1", "tok");
+        let d = ResolvingDaemon::new(
+            resolver,
+            DemoRegistry,
+            GrailRbac,
+            &auth,
+            GateDecision::Flow,
+            1000,
+        );
+
+        // GUID whose classid prefix is mars_machine (0x00000C04).
+        let guid = "00000c04-0000-0000-0000-000000000000";
+        let frames = d.react(&targeted_submit("app:req-000abc", guid, "echo guid"));
+        let res: serde_json::Value =
+            serde_json::from_str(parse(&frames[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res["output"], "guid");
     }
 }
