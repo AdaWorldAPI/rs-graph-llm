@@ -40,9 +40,10 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use graph_flow_action::HandlerOutcome;
-use lance_graph_contract::action::{ActionDef, ActionInvocation};
+use lance_graph_contract::action::{actions_for, ActionDef, ActionInvocation, ClassActions};
 use lance_graph_contract::canonical_node::NodeGuid;
 use lance_graph_contract::mul::GateDecision;
+use lance_graph_contract::ogar_codebook::canonical_concept_id;
 use lance_graph_contract::rbac::ClassRbac;
 use ogar_from_schema::action_ws::{
     bind_parameters, validate_id, CapabilityExecutor, MAX_RESULT_LEN,
@@ -198,62 +199,368 @@ impl<R: ClassRbac, E: CapabilityExecutor + Clone> Daemon<R, E> {
             // Reject before ack: we don't serve this capability.
             return vec![nack(&submit.id, 400, "unknown capability")];
         };
-        if validate_id(&submit.id).is_err() {
-            return vec![nack(&submit.id, 400, "invalid action id")];
-        }
-
-        // The id is valid and routed — acknowledge, then report the outcome as a
-        // sendActionResult (post-ack convention: failures go in the result).
-        let mut frames = vec![ack(&submit.id)];
-
-        let supplied: Vec<(String, String)> = submit.parameters.into_iter().collect();
-        let bound = match bind_parameters(&supplied, &route.signature) {
-            Ok(bound) => bound,
-            Err(err) => {
-                frames.push(result_frame(&submit.id, &error_result(&err.to_string())));
-                return frames;
-            }
-        };
-
-        // The Rubicon invocation for the gate (object resolved from object_class;
-        // a real node store would resolve the concrete target — None guard value
-        // until one is wired).
-        let mut inv = ActionInvocation::pending(
-            route.action.object_class,
-            route.action.predicate,
-            NodeGuid::new(route.action.object_class, 0, 0, 0, 0, 0),
-            1,
-            0,
-            0,
-        );
-
-        let (outcome, exec_result) = run_gated(
+        dispatch_action(
+            &submit.id,
+            &submit.capability,
+            submit.parameters,
+            &route.action,
+            &route.signature,
             self.executor.clone(),
-            submit.capability.clone(),
-            &bound,
             &self.rbac,
             self.actor.as_str(),
             &self.gate,
-            &route.action,
-            &mut inv,
-            None,
             self.now_millis,
-        );
+        )
+    }
+}
 
-        let result = match (outcome, exec_result) {
-            (HandlerOutcome::Done, Some(Ok(params))) => ok_result(&params),
-            // Post-commit executor failure (authorized, but the command failed).
-            (_, Some(Err(message))) => error_result(&message),
-            // The gate refused — the executor never ran.
-            (HandlerOutcome::Denied, _) => error_result("denied: RBAC grant missing"),
-            (HandlerOutcome::Postponed, _) => error_result("postponed: MUL hold"),
-            (HandlerOutcome::Escalated, _) => error_result("escalated: MUL block or guard veto"),
-            (HandlerOutcome::NotApplicable, _) => error_result("not applicable to this node"),
-            (HandlerOutcome::Done, None) => error_result("internal: committed without a result"),
+/// The shared gated-dispatch core for one routed `submitAction`: validate id →
+/// ack → bind against `signature` → `run_gated` (`commit_via`: RBAC ∧ guard ∧
+/// MUL) → `sendActionResult`. Both the static [`Daemon`] (executor wired) and the
+/// late-binding [`ResolvingDaemon`] (executor resolved from the classid) funnel
+/// here — they differ only in how they pick `action` / `signature` / `executor`.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_action<E: CapabilityExecutor + Clone, R: ClassRbac>(
+    id: &str,
+    capability: &str,
+    parameters: BTreeMap<String, String>,
+    action: &ActionDef,
+    signature: &[ActionParam],
+    executor: E,
+    rbac: &R,
+    actor: &str,
+    gate: &GateDecision,
+    now_millis: u64,
+) -> Vec<String> {
+    if validate_id(id).is_err() {
+        return vec![nack(id, 400, "invalid action id")];
+    }
+
+    // The id is valid and routed — acknowledge, then report the outcome as a
+    // sendActionResult (post-ack convention: failures go in the result).
+    let mut frames = vec![ack(id)];
+
+    let supplied: Vec<(String, String)> = parameters.into_iter().collect();
+    let bound = match bind_parameters(&supplied, signature) {
+        Ok(bound) => bound,
+        Err(err) => {
+            frames.push(result_frame(id, &error_result(&err.to_string())));
+            return frames;
+        }
+    };
+
+    // The Rubicon invocation for the gate (object resolved from object_class; a
+    // real node store would resolve the concrete target — None guard value until
+    // one is wired).
+    let mut inv = ActionInvocation::pending(
+        action.object_class,
+        action.predicate,
+        NodeGuid::new(action.object_class, 0, 0, 0, 0, 0),
+        1,
+        0,
+        0,
+    );
+
+    let (outcome, exec_result) = run_gated(
+        executor,
+        capability.to_owned(),
+        &bound,
+        rbac,
+        actor,
+        gate,
+        action,
+        &mut inv,
+        None,
+        now_millis,
+    );
+
+    let result = match (outcome, exec_result) {
+        (HandlerOutcome::Done, Some(Ok(params))) => ok_result(&params),
+        // Post-commit executor failure (authorized, but the command failed).
+        (_, Some(Err(message))) => error_result(&message),
+        // The gate refused — the executor never ran.
+        (HandlerOutcome::Denied, _) => error_result("denied: RBAC grant missing"),
+        (HandlerOutcome::Postponed, _) => error_result("postponed: MUL hold"),
+        (HandlerOutcome::Escalated, _) => error_result("escalated: MUL block or guard veto"),
+        (HandlerOutcome::NotApplicable, _) => error_result("not applicable to this node"),
+        (HandlerOutcome::Done, None) => error_result("internal: committed without a result"),
+    };
+
+    frames.push(result_frame(id, &cap_result_len(result)));
+    frames
+}
+
+// ──────────────────────────────────── class-late-bound dispatch ──
+//
+// The third axis of agnosticism. The static `Daemon` wires the action class +
+// executor at build time (its `routes` map + single `executor`). The
+// `ResolvingDaemon` wires neither: it resolves the action class from the target
+// node's **classid** per action (`ClassResolver`), and picks the executor from
+// what that class resolves to (`RunnerKind` → `ExecutorRegistry`). One binary
+// then serves every class on every transport; a new capability / class / runner
+// is a registry entry, never a daemon change — OGAR's "the key prerenders the
+// node; classid → ClassView" applied to the action arm.
+
+/// Which concrete executor runs a resolved action — the runner the class resolves
+/// to. Distinct from the planner's `ExecTarget` (how a *plan* executes); this is
+/// *which runner* performs the side effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerKind {
+    /// Local command (e.g. OGAR `NativeCommandExecutor`).
+    Native,
+    /// Remote command over SSH (e.g. OGAR `SshExecutor`).
+    Ssh,
+    /// HTTP callout (e.g. `RestExecutor`).
+    Rest,
+    /// An application-defined runner, keyed by a small tag.
+    Other(u16),
+}
+
+/// What a [`ClassResolver`] yields for a `(target, capability)`: the gated action
+/// definition, its parameter signature, and the runner its class uses — all read
+/// from the resolved class, none wired in the daemon.
+pub struct ResolvedAction<'a> {
+    /// The gated action definition (its `object_class` is the resolved classid).
+    pub action: &'a ActionDef,
+    /// The capability's parameter signature (from B2-lift's registration).
+    pub signature: &'a [ActionParam],
+    /// The runner the resolved class executes on.
+    pub runner: RunnerKind,
+}
+
+/// Resolve the action for a target (the node the action runs on — the resolver
+/// reads its classid) + capability, **late**. This is the holy-grail axis: the
+/// class is chosen at dispatch time from the key, not wired at build time. A
+/// resolver is typically backed by OGAR's `classid → ClassActions` surface,
+/// populated from a deployed handler's B2-lift registration.
+pub trait ClassResolver {
+    /// Resolve `(target, capability)` → the action, or `None` if this daemon
+    /// serves no such class/capability (→ `negativeAcknowledged`).
+    fn resolve(&self, target: Option<&str>, capability: &str) -> Option<ResolvedAction<'_>>;
+}
+
+/// Run a capability on the concrete executor for a resolved [`RunnerKind`]. The
+/// registry owns the executors (native / ssh / rest / …); the daemon never names
+/// them — it asks the registry to run whatever the class resolved to.
+pub trait ExecutorRegistry {
+    /// Execute `capability` with `bound` params on the executor for `runner`.
+    fn run(
+        &self,
+        runner: RunnerKind,
+        capability: &str,
+        bound: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, String>;
+}
+
+/// Adapter: a [`CapabilityExecutor`] that forwards to an [`ExecutorRegistry`] for
+/// one `runner`. Lets `run_gated` (which wants a `CapabilityExecutor`) drive the
+/// registry, so the concrete executor is chosen **post-commit** by the resolved
+/// runner — the gate runs first, exactly as for a wired executor.
+struct RegistryExecutor<'a, X: ExecutorRegistry> {
+    registry: &'a X,
+    runner: RunnerKind,
+}
+
+// Manual Clone/Copy so the impl does NOT require `X: Copy` (only `&X` + the tag,
+// both Copy, are stored).
+impl<X: ExecutorRegistry> Clone for RegistryExecutor<'_, X> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<X: ExecutorRegistry> Copy for RegistryExecutor<'_, X> {}
+
+impl<X: ExecutorRegistry> CapabilityExecutor for RegistryExecutor<'_, X> {
+    fn execute(
+        &self,
+        capability: &str,
+        bound: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, String> {
+        self.registry.run(self.runner, capability, bound)
+    }
+}
+
+/// A [`ClassResolver`] backed by OGAR's canonical action manifest
+/// ([`actions_for`] over a generated `&[ClassActions]`) — the production resolver:
+/// the demo's hand-written match replaced by OGAR's `classid → ClassActions` DO
+/// surface. It composes three canonical reads:
+/// - **classid → `ActionDef`** — [`actions_for`] (the OGAR-generated DO manifest,
+///   zero-fallback).
+/// - **classid → [`RunnerKind`]** — the class's execution kind (a machine you
+///   shell into is `Native`/`Ssh`; a service is `Rest`). Registered per classid.
+/// - **capability → signature** — the bound [`ActionParam`] list from B2-lift's
+///   `parse_capabilities`. Registered per capability.
+///
+/// The target string is read as a canonical 32-hex node GUID (its first 8 hex are
+/// the classid, per the OGAR GUID canon) or a canonical concept name (resolved via
+/// `canonical_concept_id`).
+pub struct OgarResolver {
+    actions: &'static [ClassActions],
+    runners: BTreeMap<u32, RunnerKind>,
+    signatures: BTreeMap<String, Vec<ActionParam>>,
+}
+
+impl OgarResolver {
+    /// Build a resolver over an OGAR-generated `actions` manifest (`classid →
+    /// ClassActions`). Register runners + signatures with the builders below.
+    #[must_use]
+    pub fn new(actions: &'static [ClassActions]) -> Self {
+        Self {
+            actions,
+            runners: BTreeMap::new(),
+            signatures: BTreeMap::new(),
+        }
+    }
+
+    /// Declare which [`RunnerKind`] a class executes on (builder).
+    #[must_use]
+    pub fn with_runner(mut self, classid: u32, runner: RunnerKind) -> Self {
+        self.runners.insert(classid, runner);
+        self
+    }
+
+    /// Declare a capability's bound parameter signature (builder) — from B2-lift's
+    /// `parse_capabilities` (`ConcreteCapability::params`).
+    #[must_use]
+    pub fn with_signature(
+        mut self,
+        capability: impl Into<String>,
+        signature: Vec<ActionParam>,
+    ) -> Self {
+        self.signatures.insert(capability.into(), signature);
+        self
+    }
+}
+
+/// Read a target's classid: a canonical 32-hex node GUID (first 8 hex = classid,
+/// per the OGAR GUID canon) or a canonical concept name (via the codebook).
+fn target_classid(target: &str) -> Option<u32> {
+    if target.len() >= 8 && target.as_bytes()[..8].iter().all(u8::is_ascii_hexdigit) {
+        u32::from_str_radix(&target[..8], 16).ok()
+    } else {
+        canonical_concept_id(target).map(u32::from)
+    }
+}
+
+impl ClassResolver for OgarResolver {
+    fn resolve(&self, target: Option<&str>, capability: &str) -> Option<ResolvedAction<'_>> {
+        let classid = target_classid(target?)?;
+        // classid → the class's ActionDefs (canonical, zero-fallback) → the one
+        // whose predicate is this capability.
+        let action = actions_for(self.actions, classid)
+            .iter()
+            .find(|a| a.predicate == capability)?;
+        // capability → signature (B2-lift); classid → runner (the class's kind).
+        let signature = self.signatures.get(capability)?;
+        let runner = *self.runners.get(&classid)?;
+        Some(ResolvedAction {
+            action,
+            signature,
+            runner,
+        })
+    }
+}
+
+/// The class-late-bound daemon: the holy grail. It holds **no** static action
+/// classes and **no** wired executor — only a [`ClassResolver`] (class chosen
+/// from the target's classid) and an [`ExecutorRegistry`] (executor chosen from
+/// the resolved [`RunnerKind`]). The same submitAction can dispatch to native,
+/// SSH, or REST purely by what its target's classid resolves to, with zero
+/// daemon change — and every action still passes the same hard gate.
+///
+/// Transport-agnostic ([`serve`](Self::serve) over any [`Transport`]),
+/// class-agnostic (the resolver), executor-agnostic (the registry): the three
+/// axes meet here, all keyed by the GUID.
+pub struct ResolvingDaemon<R: ClassResolver, X: ExecutorRegistry, Rbac: ClassRbac> {
+    resolver: R,
+    registry: X,
+    rbac: Rbac,
+    actor: String,
+    gate: GateDecision,
+    now_millis: u64,
+}
+
+impl<R: ClassResolver, X: ExecutorRegistry, Rbac: ClassRbac> ResolvingDaemon<R, X, Rbac> {
+    /// Build a resolving daemon from a `resolver` (class ← classid), a `registry`
+    /// (executor ← runner), `rbac`, the [`Auth`] identity (the gate actor), the
+    /// MUL `gate`, and the invocation clock.
+    pub fn new(
+        resolver: R,
+        registry: X,
+        rbac: Rbac,
+        auth: &Auth,
+        gate: GateDecision,
+        now_millis: u64,
+    ) -> Self {
+        Self {
+            resolver,
+            registry,
+            rbac,
+            actor: auth.account.clone(),
+            gate,
+            now_millis,
+        }
+    }
+
+    /// Serve over a [`Transport`] until it closes — identical loop to
+    /// [`Daemon::serve`], dispatching through the resolver + registry.
+    ///
+    /// # Errors
+    /// Propagates the transport's send error.
+    pub async fn serve<T: Transport>(&self, mut transport: T) -> Result<(), T::Error> {
+        while let Some(frame) = transport.recv().await {
+            for reply in self.react(&frame) {
+                transport.send(reply).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// React to one inbound `action-ws` frame (pure, no I/O), resolving the class
+    /// from the target's classid and the executor from the resolved runner.
+    #[must_use]
+    pub fn react(&self, frame: &str) -> Vec<String> {
+        let value: serde_json::Value = match serde_json::from_str(frame) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
         };
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("submitAction") => match serde_json::from_value::<WireSubmit>(value) {
+                Ok(submit) => self.on_submit(submit),
+                Err(_) => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
 
-        frames.push(result_frame(&submit.id, &cap_result_len(result)));
-        frames
+    fn on_submit(&self, submit: WireSubmit) -> Vec<String> {
+        let Some(resolved) = self
+            .resolver
+            .resolve(submit.node.as_deref(), &submit.capability)
+        else {
+            // No class/capability resolved for this target — reject before ack.
+            return vec![nack(
+                &submit.id,
+                400,
+                "unknown capability or unresolved class",
+            )];
+        };
+        let executor = RegistryExecutor {
+            registry: &self.registry,
+            runner: resolved.runner,
+        };
+        dispatch_action(
+            &submit.id,
+            &submit.capability,
+            submit.parameters,
+            resolved.action,
+            resolved.signature,
+            executor,
+            &self.rbac,
+            self.actor.as_str(),
+            &self.gate,
+            self.now_millis,
+        )
     }
 }
 
@@ -269,6 +576,12 @@ struct WireSubmit {
     #[serde(default)]
     #[allow(dead_code)]
     scope: Option<String>,
+    /// The target node the action runs on (its id / GUID). A `ClassResolver`
+    /// reads its classid to choose the action class late. Optional: a static
+    /// [`Daemon`] ignores it (it routes by capability); a [`ResolvingDaemon`]
+    /// passes it to the resolver.
+    #[serde(default, alias = "target", alias = "targetNode")]
+    node: Option<String>,
     #[serde(default)]
     parameters: BTreeMap<String, String>,
     #[serde(default, rename = "timeout")]
@@ -641,5 +954,283 @@ mod tests {
             .await
             .unwrap();
         server.await.unwrap();
+    }
+
+    // ───────────────────────── the holy grail: class-late-bound dispatch ──
+
+    /// `mars_resource` concept (0x0C02) — a second class, to show the classid
+    /// (not a wired route) drives which executor runs.
+    const MARS_RESOURCE: u32 = 0x0000_0C02;
+
+    /// Grants `automation_operator` ACT on BOTH mars_machine and mars_resource.
+    struct GrailRbac;
+    impl ClassRbac for GrailRbac {
+        fn actor_roles(&self, actor: ActorId<'_>) -> &[RoleId] {
+            match actor {
+                "ops-1" => &["automation_operator"],
+                _ => &[],
+            }
+        }
+        fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
+            role == "automation_operator"
+                && (class as u16 == MARS_MACHINE as u16 || class as u16 == MARS_RESOURCE as u16)
+                && matches!(op, Operation::Act { .. })
+        }
+    }
+
+    /// Resolves the SAME capability (`ExecuteCommand`) to different classes +
+    /// runners by the target node's classid — the late binding. (Here a name
+    /// stands in for the target's classid; a real resolver reads the classid
+    /// prefix of the target GUID via OGAR's `classid → ClassActions` surface.)
+    struct DemoResolver {
+        native: (ActionDef, Vec<ActionParam>),
+        rest: (ActionDef, Vec<ActionParam>),
+    }
+    impl DemoResolver {
+        fn new() -> Self {
+            let sig = || {
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }]
+            };
+            let def = |object_class| ActionDef {
+                predicate: "ExecuteCommand",
+                object_class,
+                exec: ExecTarget::Native,
+                guard: None,
+                required_role: Some("automation_operator"),
+                overrides: None,
+            };
+            Self {
+                native: (def(MARS_MACHINE), sig()),
+                rest: (def(MARS_RESOURCE), sig()),
+            }
+        }
+    }
+    impl ClassResolver for DemoResolver {
+        fn resolve(&self, target: Option<&str>, capability: &str) -> Option<ResolvedAction<'_>> {
+            if capability != "ExecuteCommand" {
+                return None;
+            }
+            match target {
+                // host-A's classid is mars_machine → run it natively.
+                Some("host-A") => Some(ResolvedAction {
+                    action: &self.native.0,
+                    signature: &self.native.1,
+                    runner: RunnerKind::Native,
+                }),
+                // svc-B's classid is mars_resource → run it as a REST callout.
+                Some("svc-B") => Some(ResolvedAction {
+                    action: &self.rest.0,
+                    signature: &self.rest.1,
+                    runner: RunnerKind::Rest,
+                }),
+                _ => None,
+            }
+        }
+    }
+
+    /// Maps a resolved runner to a concrete executor. Native runs for real; Rest
+    /// is faked (the real `RestExecutor` needs a live endpoint — proven in its own
+    /// test). The daemon never names either; it asks the registry to run whatever
+    /// the class resolved to.
+    struct DemoRegistry;
+    impl ExecutorRegistry for DemoRegistry {
+        fn run(
+            &self,
+            runner: RunnerKind,
+            capability: &str,
+            bound: &[(String, String)],
+        ) -> Result<Vec<(String, String)>, String> {
+            match runner {
+                RunnerKind::Native => NativeCommandExecutor.execute(capability, bound),
+                RunnerKind::Rest => Ok(vec![("ran".to_owned(), "rest".to_owned())]),
+                other => Err(format!("no executor for {other:?}")),
+            }
+        }
+    }
+
+    fn resolving_daemon(account: &str) -> ResolvingDaemon<DemoResolver, DemoRegistry, GrailRbac> {
+        let auth = Auth::new(account, "tok");
+        ResolvingDaemon::new(
+            DemoResolver::new(),
+            DemoRegistry,
+            GrailRbac,
+            &auth,
+            GateDecision::Flow,
+            1000,
+        )
+    }
+
+    fn targeted_submit(id: &str, node: &str, command: &str) -> String {
+        serde_json::json!({
+            "type": "submitAction", "id": id, "capability": "ExecuteCommand",
+            "node": node, "parameters": { "command": command }
+        })
+        .to_string()
+    }
+
+    /// THE GRAIL: one submitAction, one capability — but the executor is chosen
+    /// late, from what the target's classid resolves to. host-A (mars_machine) →
+    /// native runs the real command; svc-B (mars_resource) → the REST runner.
+    /// Zero daemon change between the two; only the resolution differs.
+    #[test]
+    fn same_capability_dispatches_by_resolved_class_to_different_runners() {
+        let d = resolving_daemon("ops-1");
+
+        let fa = d.react(&targeted_submit("app:req-aaaaaa", "host-A", "echo grail"));
+        assert_eq!(parse(&fa[0])["type"], "acknowledged");
+        let res_a: serde_json::Value =
+            serde_json::from_str(parse(&fa[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            res_a["output"], "grail",
+            "host-A → native runner ran the command"
+        );
+
+        let fb = d.react(&targeted_submit("app:req-bbbbbb", "svc-B", "echo grail"));
+        let res_b: serde_json::Value =
+            serde_json::from_str(parse(&fb[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res_b["ran"], "rest", "svc-B → REST runner, same capability");
+    }
+
+    /// The gate still rules: an unauthorized actor is `Denied` and NEITHER
+    /// resolved runner executes — late binding does not weaken the hard floor.
+    #[test]
+    fn resolving_daemon_unauthorized_is_denied_without_running() {
+        let d = resolving_daemon("intruder");
+        let frames = d.react(&targeted_submit(
+            "app:req-cccccc",
+            "host-A",
+            "echo SHOULD_NOT_RUN",
+        ));
+        assert_eq!(parse(&frames[0])["type"], "acknowledged");
+        let res: serde_json::Value =
+            serde_json::from_str(parse(&frames[1])["result"].as_str().unwrap()).unwrap();
+        assert!(res["error"].as_str().unwrap().contains("denied"));
+        assert!(
+            res.get("output").is_none(),
+            "the resolved executor never ran"
+        );
+    }
+
+    /// A target whose classid resolves to no served class is rejected before ack.
+    #[test]
+    fn resolving_daemon_unresolved_target_is_nacked() {
+        let d = resolving_daemon("ops-1");
+        let frames = d.react(&targeted_submit("app:req-dddddd", "unknown-host", "echo x"));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(parse(&frames[0])["type"], "negativeAcknowledged");
+    }
+
+    // The PRODUCTION resolver: OgarResolver over a canonical `&[ClassActions]`
+    // manifest (`actions_for`) — the same surface OGAR generates from a class's
+    // DO arm. No hand-written match; the classid drives everything.
+    const MACHINE_ACTIONS: &[ActionDef] = &[ActionDef {
+        predicate: "ExecuteCommand",
+        object_class: MARS_MACHINE,
+        exec: ExecTarget::Native,
+        guard: None,
+        required_role: Some("automation_operator"),
+        overrides: None,
+    }];
+    const RESOURCE_ACTIONS: &[ActionDef] = &[ActionDef {
+        predicate: "ExecuteCommand",
+        object_class: MARS_RESOURCE,
+        exec: ExecTarget::Native,
+        guard: None,
+        required_role: Some("automation_operator"),
+        overrides: None,
+    }];
+    const ACTION_REGISTRY: &[ClassActions] = &[
+        ClassActions {
+            classid: MARS_MACHINE,
+            actions: MACHINE_ACTIONS,
+        },
+        ClassActions {
+            classid: MARS_RESOURCE,
+            actions: RESOURCE_ACTIONS,
+        },
+    ];
+
+    /// The grail through the PRODUCTION resolver: `OgarResolver` resolves the
+    /// class from the target's concept name via the canonical `actions_for`
+    /// manifest, and the runner from the class — `mars_machine` → native runs the
+    /// real command; `mars_resource` → REST. Same capability, zero daemon change,
+    /// no hand-written resolution.
+    #[test]
+    fn ogar_resolver_drives_the_grail_via_actions_for() {
+        let resolver = OgarResolver::new(ACTION_REGISTRY)
+            .with_runner(MARS_MACHINE, RunnerKind::Native)
+            .with_runner(MARS_RESOURCE, RunnerKind::Rest)
+            .with_signature(
+                "ExecuteCommand",
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }],
+            );
+        let auth = Auth::new("ops-1", "tok");
+        let d = ResolvingDaemon::new(
+            resolver,
+            DemoRegistry,
+            GrailRbac,
+            &auth,
+            GateDecision::Flow,
+            1000,
+        );
+
+        // Target by concept name → canonical_concept_id → classid → actions_for.
+        let fa = d.react(&targeted_submit(
+            "app:req-eeeeee",
+            "mars_machine",
+            "echo canon",
+        ));
+        let res_a: serde_json::Value =
+            serde_json::from_str(parse(&fa[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res_a["output"], "canon");
+
+        let fb = d.react(&targeted_submit(
+            "app:req-ffffff",
+            "mars_resource",
+            "echo canon",
+        ));
+        let res_b: serde_json::Value =
+            serde_json::from_str(parse(&fb[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res_b["ran"], "rest");
+    }
+
+    /// A GUID-shaped target resolves by its 8-hex classid prefix (the OGAR GUID
+    /// canon), not just by concept name.
+    #[test]
+    fn ogar_resolver_reads_the_classid_prefix_of_a_guid() {
+        let resolver = OgarResolver::new(ACTION_REGISTRY)
+            .with_runner(MARS_MACHINE, RunnerKind::Native)
+            .with_signature(
+                "ExecuteCommand",
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }],
+            );
+        let auth = Auth::new("ops-1", "tok");
+        let d = ResolvingDaemon::new(
+            resolver,
+            DemoRegistry,
+            GrailRbac,
+            &auth,
+            GateDecision::Flow,
+            1000,
+        );
+
+        // GUID whose classid prefix is mars_machine (0x00000C04).
+        let guid = "00000c04-0000-0000-0000-000000000000";
+        let frames = d.react(&targeted_submit("app:req-000abc", guid, "echo guid"));
+        let res: serde_json::Value =
+            serde_json::from_str(parse(&frames[1])["result"].as_str().unwrap()).unwrap();
+        assert_eq!(res["output"], "guid");
     }
 }
