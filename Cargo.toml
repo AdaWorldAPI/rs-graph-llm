@@ -2,6 +2,7 @@
 members = [
     "graph-flow",
     "graph-flow-action",   # kgV ActionHandler + cold-path/MUL/hot dispatch (inner: one action)
+    "graph-flow-action-ogar", # uplink: OGAR's executor behind the hard gate (commit_via lands first)
     "graph-flow-kanban",   # outer planning-phase envelope: one Rubicon cycle over contract::kanban
     "insurance-claims-service",
     "examples",

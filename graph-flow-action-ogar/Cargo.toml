@@ -1,0 +1,19 @@
+[package]
+name = "graph-flow-action-ogar"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Uplink: runs OGAR's hard ActionHandler (a CapabilityExecutor — the executor that actually runs the command) behind graph-flow-action's gated dispatch, so the cold-path contract (commit_via: RBAC ∧ state-guard ∧ MUL) lands BEFORE anything executes. OGAR owns the executor; rs-graph-llm owns the hard gate."
+
+[dependencies]
+# graph-flow-action (the kgV ActionHandler + the gated dispatch) and the
+# contract it speaks. Same path-dep sources as graph-flow-action so the
+# ActionDef / ActionInvocation types match (one lance-graph-contract).
+graph-flow-action = { path = "../graph-flow-action" }
+lance-graph-contract = { path = "../../lance-graph/crates/lance-graph-contract" }
+# OGAR's executor seam (the trait only — no lance-graph dep on this side).
+ogar-from-schema = { path = "../../OGAR/crates/ogar-from-schema" }
+
+[dev-dependencies]
+# The OGAR reference native executor, to prove a real command runs gated.
+ogar-action-handler = { path = "../../OGAR/crates/ogar-action-handler" }
