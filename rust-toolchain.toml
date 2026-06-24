@@ -1,0 +1,8 @@
+# Pinned to 1.95.0 to match the AdaWorldAPI stack this workspace consumes via
+# path deps (OGAR `ogar-from-schema` / `ogar-action-handler` declare
+# rust-version 1.95 for the `graph-flow-action-ogar` uplink; lance-graph is on
+# the same channel). Keeps `cargo` at the repo root on one toolchain.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
