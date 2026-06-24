@@ -5,6 +5,19 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Uplink: runs OGAR's hard ActionHandler (a CapabilityExecutor — the executor that actually runs the command) behind graph-flow-action's gated dispatch, so the cold-path contract (commit_via: RBAC ∧ state-guard ∧ MUL) lands BEFORE anything executes. OGAR owns the executor; rs-graph-llm owns the hard gate."
 
+[features]
+default = []
+# The TRANSPORT-AGNOSTIC gated-dispatch core (B2-transport core): the wire codec
+# for the six action-ws messages + `Daemon::react` (submitAction → ack +
+# sendActionResult, running the gate + executor). No async, no socket — it turns
+# one inbound message into outbound messages. Both edges (`ws`, `kafka`) reuse it
+# verbatim, because HIRO distributes actions over BOTH a handler-facing WebSocket
+# (`action-ws`) and an internal Kafka bus — the wire differs, the dispatch doesn't.
+daemon = ["dep:serde", "dep:serde_json"]
+# The live action-ws WebSocket edge: connect to a HIRO engine, frame the codec,
+# drive `Daemon::react` per message. The documented external-handler protocol.
+ws = ["daemon", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+
 [dependencies]
 # graph-flow-action (the kgV ActionHandler + the gated dispatch) and the
 # contract it speaks. Same path-dep sources as graph-flow-action so the
@@ -14,6 +27,19 @@ lance-graph-contract = { path = "../../lance-graph/crates/lance-graph-contract" 
 # OGAR's executor seam (the trait only — no lance-graph dep on this side).
 ogar-from-schema = { path = "../../OGAR/crates/ogar-from-schema" }
 
+# B2-transport: the `daemon` core needs only the JSON codec; the `ws` edge adds
+# the async socket stack. A future `kafka` edge (HIRO's internal bus) layers an
+# rdkafka consumer/producer over the SAME `daemon` core — reserved, not yet wired.
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tokio = { version = "1.40", features = ["rt", "macros", "net", "io-util"], optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+futures-util = { version = "0.3", optional = true }
+
 [dev-dependencies]
 # The OGAR reference native executor, to prove a real command runs gated.
 ogar-action-handler = { path = "../../OGAR/crates/ogar-action-handler" }
+# The mock-server roundtrip test for the ws edge drives a full tokio loop.
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio-tungstenite = { version = "0.24" }
+futures-util = { version = "0.3" }
