@@ -22,6 +22,17 @@
 
 #![forbid(unsafe_code)]
 
+/// B2-transport — the transport-agnostic gated-action daemon (`feature = "daemon"`):
+/// the wire codec + `Daemon::react`/`serve` + the `Transport` trait, with the live
+/// `action-ws` WebSocket edge behind `feature = "ws"`.
+#[cfg(feature = "daemon")]
+pub mod daemon;
+
+/// A REST `CapabilityExecutor` target (`feature = "rest"`) — the arago
+/// HTTP-callout handler shape, run behind the same hard gate as the native one.
+#[cfg(feature = "rest")]
+pub mod rest;
+
 use std::cell::RefCell;
 
 use graph_flow_action::{dispatch_via, ActionHandler, HandlerOutcome};
