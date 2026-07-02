@@ -171,6 +171,8 @@ pub mod error;
 pub mod graph;
 pub mod runner;
 pub mod storage;
+#[cfg(feature = "kanban")]
+pub mod storage_kanban;
 pub mod storage_postgres;
 #[cfg(feature = "surreal-lance")]
 pub mod storage_surreal;
@@ -185,6 +187,8 @@ pub use runner::FlowRunner;
 pub use storage::{
     GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session, SessionStorage,
 };
+#[cfg(feature = "kanban")]
+pub use storage_kanban::KanbanSessionStorage;
 pub use storage_postgres::PostgresSessionStorage;
 #[cfg(feature = "surreal-lance")]
 pub use storage_surreal::SurrealSessionStorage;
