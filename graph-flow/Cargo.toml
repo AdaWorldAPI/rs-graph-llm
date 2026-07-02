@@ -35,8 +35,15 @@ rig = { workspace = true, optional = true } # package = "rig-core", aliased to `
 # the `engine::local::Lance` backend; optional + off by default because it pulls
 # the heavy Lance tree. Enable with `--features surreal-lance`.
 surrealdb = { git = "https://github.com/AdaWorldAPI/surrealdb", branch = "main", optional = true, default-features = false, features = ["kv-lance"] }
+# D-V3-W3b: KanbanSessionStorage — the replayable-langgraph-handler backend.
+# graph-flow-kanban is the outer planning-phase envelope (Rubicon kanban
+# cycle); graph-flow composes it (per that crate's own description). Both
+# optional + off by default; enable with `--features kanban`.
+graph-flow-kanban = { path = "../graph-flow-kanban", optional = true }
+lance-graph-contract = { path = "../../lance-graph/crates/lance-graph-contract", optional = true }
 
 [features]
 default = []
 rig = ["dep:rig"]
 surreal-lance = ["dep:surrealdb"]
+kanban = ["dep:graph-flow-kanban", "dep:lance-graph-contract"]
