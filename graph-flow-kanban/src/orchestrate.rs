@@ -28,7 +28,17 @@ pub struct CycleOutcome {
 }
 
 /// Run one cognitive cycle for `(classid, predicate)` against the provided
-/// manifest + RBAC.
+/// manifest + RBAC, **on behalf of `on_behalf`** — the mailbox that owns the
+/// SoA this stage serves.
+///
+/// `on_behalf` is the write-on-behalf stamp (V3 iron rule): the caller reads
+/// it from the SoA it acts for — `SoaEnvelope::mailbox_owner()` / the
+/// `mailbox_id()` of the `KanbanActor`-owned `MailboxSoA` — the SAME stamp
+/// `KanbanSessionStorage` carries. It is NEVER derived from the classid: a
+/// classid is a class discriminator, not an owner (ractor declares/delegates
+/// ownership at compile time; deriving an owner from a class would attribute
+/// every cycle for class X to a phantom mailbox X). Every `KanbanMove` this
+/// cycle emits is attributed to `on_behalf`.
 ///
 /// 1. Resolve the [`ActionDef`] by `(object_class, predicate)`. Unknown ⇒ the
 ///    envelope is vetoed straight to `Prune` (no action to run).
@@ -46,6 +56,7 @@ pub fn run_cycle(
     actions: &[ActionDef],
     rbac: &impl ClassRbac,
     actor_id: ActorId<'_>,
+    on_behalf: MailboxId,
     classid: u32,
     predicate: &'static str,
     gate: &GateDecision,
@@ -53,7 +64,7 @@ pub fn run_cycle(
     guard_value: Option<&str>,
     now_millis: u64,
 ) -> CycleOutcome {
-    let mailbox: MailboxId = classid;
+    let mailbox: MailboxId = on_behalf;
     let Some(def) = actions
         .iter()
         .find(|a| a.object_class == classid && a.predicate == predicate)
@@ -93,6 +104,10 @@ mod tests {
 
     const PATIENT: u32 = 0x0000_0901;
 
+    /// The owning mailbox the stage acts on behalf of — DELIBERATELY distinct
+    /// from `PATIENT` to pin that the owner is never derived from the classid.
+    const OWNER_MAILBOX: MailboxId = 4242;
+
     fn manifest() -> Vec<ActionDef> {
         vec![ActionDef {
             predicate: "approve",
@@ -131,6 +146,7 @@ mod tests {
             &m,
             &Rbac,
             "dr-house",
+            OWNER_MAILBOX,
             PATIENT,
             "approve",
             &GateDecision::Flow,
@@ -140,6 +156,15 @@ mod tests {
         );
         assert_eq!(out.outcome, KanbanColumn::Commit);
         assert_eq!(out.envelope.column, KanbanColumn::Commit);
+        // Ownership pin: every move is attributed to the on_behalf mailbox,
+        // and that owner is NOT the classid (the pre-fix conflation).
+        assert_eq!(out.envelope.mailbox, OWNER_MAILBOX);
+        assert_ne!(out.envelope.mailbox, PATIENT);
+        assert!(out
+            .envelope
+            .moves
+            .iter()
+            .all(|m| m.mailbox == OWNER_MAILBOX));
     }
 
     #[test]
@@ -149,6 +174,7 @@ mod tests {
             &m,
             &Rbac,
             "betty", // not a physician
+            OWNER_MAILBOX,
             PATIENT,
             "approve",
             &GateDecision::Flow,
@@ -166,6 +192,7 @@ mod tests {
             &m,
             &Rbac,
             "dr-house",
+            OWNER_MAILBOX,
             PATIENT,
             "approve",
             &GateDecision::Hold {
@@ -185,6 +212,7 @@ mod tests {
             &m,
             &Rbac,
             "dr-house",
+            OWNER_MAILBOX,
             PATIENT,
             "nonexistent",
             &GateDecision::Flow,
