@@ -155,7 +155,9 @@ mod tests {
         use lance_graph_contract::mul::GateDecision;
         use lance_graph_contract::rbac::{ActorId, ClassId, ClassRbac, Operation, RoleId};
 
-        const MARS_MACHINE: u32 = 0x0000_0C04;
+        use lance_graph_contract::ogar_codebook::{classid_canon, compose_classid};
+
+        const MARS_MACHINE: u32 = compose_classid(0x0C04, 0x0000);
 
         struct OpsRbac;
         impl ClassRbac for OpsRbac {
@@ -167,7 +169,7 @@ mod tests {
             }
             fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
                 role == "automation_operator"
-                    && class as u16 == MARS_MACHINE as u16
+                    && classid_canon(class) == classid_canon(MARS_MACHINE)
                     && matches!(op, Operation::Act { .. })
             }
         }

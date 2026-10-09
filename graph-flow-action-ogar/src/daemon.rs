@@ -43,7 +43,7 @@ use graph_flow_action::HandlerOutcome;
 use lance_graph_contract::action::{actions_for, ActionDef, ActionInvocation, ClassActions};
 use lance_graph_contract::canonical_node::NodeGuid;
 use lance_graph_contract::mul::GateDecision;
-use lance_graph_contract::ogar_codebook::canonical_concept_id;
+use lance_graph_contract::ogar_codebook::{canonical_concept_id, classid_canon, compose_classid};
 use lance_graph_contract::rbac::ClassRbac;
 use ogar_from_schema::action_ws::{
     bind_parameters, validate_id, CapabilityExecutor, MAX_RESULT_LEN,
@@ -394,6 +394,15 @@ impl<X: ExecutorRegistry> CapabilityExecutor for RegistryExecutor<'_, X> {
 /// The target string is read as a canonical 32-hex node GUID (its first 8 hex are
 /// the classid, per the OGAR GUID canon) or a canonical concept name (resolved via
 /// `canonical_concept_id`).
+///
+/// **Which class actions and runners are looked up under.** A classid is
+/// `concept (high u16) ‖ ClassView selector (low u16)`, and the selector chooses
+/// render only: "neither half carries behavior — class-magic is a property of the
+/// Core node the address resolves to" (OGAR `CLAUDE.md`). Action registries are
+/// therefore keyed at the concept's core lens, `compose_classid(concept, 0x0000)`
+/// (as `lance-graph-ogar`'s `REGISTRY` is). Actions and runners are looked up
+/// there, whichever lens or spelling names the target: a GUID whose selector is
+/// `0x00A3` and the bare concept name resolve the same class.
 pub struct OgarResolver {
     actions: &'static [ClassActions],
     runners: BTreeMap<u32, RunnerKind>,
@@ -412,10 +421,12 @@ impl OgarResolver {
         }
     }
 
-    /// Declare which [`RunnerKind`] a class executes on (builder).
+    /// Declare which [`RunnerKind`] a class executes on (builder). Keyed at the
+    /// class's core lens, like the action registry: registering `0x0C04_0005`
+    /// and `0x0C04_0000` names the same class.
     #[must_use]
     pub fn with_runner(mut self, classid: u32, runner: RunnerKind) -> Self {
-        self.runners.insert(classid, runner);
+        self.runners.insert(core_lens(classid), runner);
         self
     }
 
@@ -433,18 +444,27 @@ impl OgarResolver {
 }
 
 /// Read a target's classid: a canonical 32-hex node GUID (first 8 hex = classid,
-/// per the OGAR GUID canon) or a canonical concept name (via the codebook).
+/// per the OGAR GUID canon) or a canonical concept name (via the codebook,
+/// composed at the core lens through the contract's one composition).
 fn target_classid(target: &str) -> Option<u32> {
     if target.len() >= 8 && target.as_bytes()[..8].iter().all(u8::is_ascii_hexdigit) {
         u32::from_str_radix(&target[..8], 16).ok()
     } else {
-        canonical_concept_id(target).map(u32::from)
+        canonical_concept_id(target).map(|concept| compose_classid(concept, 0x0000))
     }
+}
+
+/// The core lens of a classid: its concept with the ClassView selector `0x0000`.
+/// The key action registries and runner tables use.
+const fn core_lens(classid: u32) -> u32 {
+    compose_classid(classid_canon(classid), 0x0000)
 }
 
 impl ClassResolver for OgarResolver {
     fn resolve(&self, target: Option<&str>, capability: &str) -> Option<ResolvedAction<'_>> {
-        let classid = target_classid(target?)?;
+        // The class's core node: actions and runners belong to the concept, not
+        // to the render lens the target was addressed through.
+        let classid = core_lens(target_classid(target?)?);
         // classid → the class's ActionDefs (canonical, zero-fallback) → the one
         // whose predicate is this capability.
         let action = actions_for(self.actions, classid)
@@ -735,7 +755,8 @@ mod tests {
     use lance_graph_contract::rbac::{ActorId, ClassId, Operation, RoleId};
     use ogar_action_handler::NativeCommandExecutor;
 
-    const MARS_MACHINE: u32 = 0x0000_0C04;
+    /// `mars_machine` (0x0C04) at the core lens, composed by the contract.
+    const MARS_MACHINE: u32 = compose_classid(0x0C04, 0x0000);
 
     struct OpsRbac;
     impl ClassRbac for OpsRbac {
@@ -747,7 +768,7 @@ mod tests {
         }
         fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
             role == "automation_operator"
-                && class as u16 == MARS_MACHINE as u16
+                && classid_canon(class) == classid_canon(MARS_MACHINE)
                 && matches!(op, Operation::Act { .. })
         }
     }
@@ -831,7 +852,8 @@ mod tests {
         let d = daemon(
             "ops-1",
             GateDecision::Block {
-                reason: "human veto".to_owned(),
+                texture: lance_graph_contract::mul::TrustTexture::Uncertain,
+                flow: lance_graph_contract::mul::FlowState::Transition,
             },
         );
         let frames = d.react(&submit_frame("app:req-000003", "echo nope"));
@@ -960,7 +982,8 @@ mod tests {
 
     /// `mars_resource` concept (0x0C02) — a second class, to show the classid
     /// (not a wired route) drives which executor runs.
-    const MARS_RESOURCE: u32 = 0x0000_0C02;
+    /// `mars_resource` (0x0C02) at the core lens.
+    const MARS_RESOURCE: u32 = compose_classid(0x0C02, 0x0000);
 
     /// Grants `automation_operator` ACT on BOTH mars_machine and mars_resource.
     struct GrailRbac;
@@ -973,7 +996,8 @@ mod tests {
         }
         fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
             role == "automation_operator"
-                && (class as u16 == MARS_MACHINE as u16 || class as u16 == MARS_RESOURCE as u16)
+                && (classid_canon(class) == classid_canon(MARS_MACHINE)
+                    || classid_canon(class) == classid_canon(MARS_RESOURCE))
                 && matches!(op, Operation::Act { .. })
         }
     }
@@ -1226,11 +1250,47 @@ mod tests {
             1000,
         );
 
-        // GUID whose classid prefix is mars_machine (0x00000C04).
-        let guid = "00000c04-0000-0000-0000-000000000000";
+        // GUID whose classid prefix is mars_machine at the core lens (0x0C040000).
+        let guid = "0c040000-0000-0000-0000-000000000000";
         let frames = d.react(&targeted_submit("app:req-000abc", guid, "echo guid"));
         let res: serde_json::Value =
             serde_json::from_str(parse(&frames[1])["result"].as_str().unwrap()).unwrap();
         assert_eq!(res["output"], "guid");
+    }
+
+    /// One class, three spellings: the concept name, a GUID at the core lens and
+    /// a GUID whose ClassView selector the program set. All three resolve the
+    /// same action and runner, because actions belong to the concept's core node,
+    /// not to the render lens. A different concept sharing the selector does not.
+    #[test]
+    fn every_spelling_of_one_class_resolves_the_same_action() {
+        let resolver = OgarResolver::new(ACTION_REGISTRY)
+            .with_runner(MARS_MACHINE, RunnerKind::Native)
+            .with_runner(MARS_RESOURCE, RunnerKind::Rest)
+            .with_signature(
+                "ExecuteCommand",
+                vec![ActionParam {
+                    name: "command".to_owned(),
+                    mandatory: true,
+                    default: None,
+                }],
+            );
+        let resolve = |t: &str| {
+            resolver
+                .resolve(Some(t), "ExecuteCommand")
+                .map(|r| (r.action.object_class, r.runner))
+        };
+        let want = Some((MARS_MACHINE, RunnerKind::Native));
+        assert_eq!(resolve("mars_machine"), want);
+        assert_eq!(resolve("0c040000-0000-0000-0000-000000000000"), want);
+        assert_eq!(resolve("0c0400a3-0000-0000-0000-000000000000"), want);
+        // Same selector, other concept: its own class, never mars_machine's.
+        assert_eq!(
+            resolve("0c0200a3-0000-0000-0000-000000000000"),
+            Some((MARS_RESOURCE, RunnerKind::Rest))
+        );
+        // The pre-flip spelling of mars_machine is not a core-lens classid and
+        // is not reinterpreted: it names concept 0x0000, which has no actions.
+        assert_eq!(resolve("00000c04-0000-0000-0000-000000000000"), None);
     }
 }
