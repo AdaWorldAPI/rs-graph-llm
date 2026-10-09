@@ -260,7 +260,8 @@ mod tests {
             &OpsRbac,
             "ops-1", // authorized…
             &GateDecision::Block {
-                reason: "human veto".into(),
+                texture: lance_graph_contract::mul::TrustTexture::Uncertain,
+                flow: lance_graph_contract::mul::FlowState::Transition,
             }, // …but MUL blocks
             &def(),
             &mut i,

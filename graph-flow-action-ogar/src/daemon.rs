@@ -831,7 +831,8 @@ mod tests {
         let d = daemon(
             "ops-1",
             GateDecision::Block {
-                reason: "human veto".to_owned(),
+                texture: lance_graph_contract::mul::TrustTexture::Uncertain,
+                flow: lance_graph_contract::mul::FlowState::Transition,
             },
         );
         let frames = d.react(&submit_frame("app:req-000003", "echo nope"));
