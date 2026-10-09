@@ -41,9 +41,10 @@ use lance_graph_contract::mul::GateDecision;
 use lance_graph_contract::rbac::{ActorId, ClassRbac};
 use ogar_from_schema::action_ws::CapabilityExecutor;
 
-/// The `auth_store` classid (`0x0B01`) the handler authorizes through — its
-/// `Configuration` membrane (HIRO `ActionHandler → Configuration`).
-const AUTH_STORE: u32 = 0x0000_0B01;
+/// The `auth_store` classid (concept `0x0B01`, core lens) the handler
+/// authorizes through — its `Configuration` membrane (HIRO `ActionHandler →
+/// Configuration`). Composed by the contract, concept in the high half.
+const AUTH_STORE: u32 = lance_graph_contract::render_classid(0x0000, 0x0B01);
 
 /// The outcome of running a capability: the bound `resultParameters` on success,
 /// or an error message (an OGAR [`CapabilityExecutor::execute`] result).
@@ -163,7 +164,10 @@ mod tests {
     use ogar_action_handler::NativeCommandExecutor;
 
     /// `mars_machine` concept (0x0C04) — the MARS node an ExecuteCommand targets.
-    const MARS_MACHINE: u32 = 0x0000_0C04;
+    use lance_graph_contract::ogar_codebook::{classid_canon, compose_classid};
+
+    /// `mars_machine` (0x0C04) at the core lens.
+    const MARS_MACHINE: u32 = compose_classid(0x0C04, 0x0000);
 
     /// Grants `automation_operator` → ACT on `mars_machine`.
     struct OpsRbac;
@@ -176,7 +180,7 @@ mod tests {
         }
         fn grant_permits(&self, role: RoleId, class: ClassId, op: &Operation<'_>) -> bool {
             role == "automation_operator"
-                && class as u16 == MARS_MACHINE as u16
+                && classid_canon(class) == classid_canon(MARS_MACHINE)
                 && matches!(op, Operation::Act { .. })
         }
     }
