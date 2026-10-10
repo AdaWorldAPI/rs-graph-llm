@@ -1,0 +1,18 @@
+[package]
+name = "graph-flow-lance"
+version = "0.1.0"
+edition = "2021"
+description = "graph-flow Tasks over the lance-graph fold algebra. The Context carries handles, never populations: LangGraph's state channels and reducers become lance-graph-report fold states with merge laws, its Send fan-out becomes a mask-set coordinate folded in one pass, and a checkpoint holds generation-checked handles."
+license = "MIT"
+publish = false
+
+# Excluded from the rs-graph-llm workspace (see the root Cargo.toml): the
+# lance-graph path below is a sibling checkout, never crates.io.
+[dependencies]
+graph-flow = { path = "../../graph-flow" }
+lance-graph-report = { path = "../../../lance-graph/crates/lance-graph-report" }
+async-trait = "0.1"
+serde_json = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
