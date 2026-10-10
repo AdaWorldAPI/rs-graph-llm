@@ -305,12 +305,15 @@ impl Task for Branch {
     }
 
     async fn run(&self, ctx: Context) -> graph_flow::Result<TaskResult> {
+        let z8 =
+            |e: z8run_core::Z8Error| graph_flow::GraphError::TaskExecutionFailed(e.to_string());
         let v: Value = ctx.get(DEFAULT_KEY).await.unwrap();
-        let plan = (*self.reg.plan(&Envelope::from_json(&v)?)?)
+        let env = Envelope::from_json(&v).map_err(z8)?;
+        let plan = (*self.reg.plan(&env).map_err(z8)?)
             .clone()
             .filter(Selection::Mask(MaskId(BRANCH_BASE + self.i)));
-        let res = self.reg.execute(&plan)?;
-        let out = self.reg.put_result(&plan, res)?;
+        let res = self.reg.execute(&plan).map_err(z8)?;
+        let out = self.reg.put_result(&plan, res).map_err(z8)?;
         ctx.set(format!("branch.{}", self.i), out.to_json()).await;
         Ok(TaskResult::new(None, NextAction::End))
     }

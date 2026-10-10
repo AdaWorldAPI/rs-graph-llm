@@ -20,13 +20,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use graph_flow::{Context, GraphError, NextAction, Result, Task, TaskResult};
-use lance_graph_report::render::{Grid, Terminal};
+use lance_graph_report::render::Terminal;
 use lance_graph_report::{
-    AxisRole, CellValue, CoordSpec, Measure, ReportPlan, Selection, SourceId, SourceRef,
+    AxisRole, CoordSpec, Measure, ReportPlan, Selection, SourceId, SourceRef,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
+use z8run_core::Z8Error;
+use z8run_lance::nodes::grid_value;
+use z8run_lance::{Envelope, LanceRegistry, Role};
 
-use crate::registry::{Envelope, LanceRegistry, Role};
+/// A z8run-lance error as a graph-flow task failure.
+pub(crate) fn z8(e: Z8Error) -> GraphError {
+    GraphError::TaskExecutionFailed(e.to_string())
+}
 
 /// The `Context` key lance tasks read and write by default.
 pub const DEFAULT_KEY: &str = "lance";
@@ -83,7 +89,11 @@ impl LanceTask {
     /// Start a plan over the source published as `name`. The name is resolved
     /// now, so a misspelt source fails when the graph is built, not mid-run.
     pub fn source(id: impl Into<String>, reg: &Arc<LanceRegistry>, name: &str) -> Result<Self> {
-        Ok(Self::build(id, LanceOp::Source(reg.source_id(name)?), reg))
+        Ok(Self::build(
+            id,
+            LanceOp::Source(reg.source_id(name).map_err(z8)?),
+            reg,
+        ))
     }
 
     /// AND a selection into the plan.
@@ -151,33 +161,36 @@ impl LanceTask {
             .get(&self.key)
             .await
             .ok_or_else(|| GraphError::ContextError(format!("no envelope under '{}'", self.key)))?;
-        Envelope::from_json(&v)
+        Envelope::from_json(&v).map_err(|e| GraphError::ContextError(e.to_string()))
     }
 
     async fn step(&self, ctx: &Context) -> Result<String> {
         if let LanceOp::Source(id) = self.op {
-            let b = self.reg.batch(id)?;
-            let env = self.reg.put_plan(ReportPlan::over(SourceRef {
-                id,
-                generation: b.generation(),
-            }))?;
+            let b = self.reg.batch(id).map_err(z8)?;
+            let env = self
+                .reg
+                .put_plan(ReportPlan::over(SourceRef {
+                    id,
+                    generation: b.generation(),
+                }))
+                .map_err(z8)?;
             ctx.set(self.key.clone(), env.to_json()).await;
             return Ok(format!("plan {} over source {}", env.handle, id));
         }
         let env = self.envelope(ctx).await?;
         match (env.role, &self.op) {
             (Role::Result, LanceOp::Rotate) => {
-                let r = self.reg.result(&env)?.rotate();
+                let r = self.reg.result(&env).map_err(z8)?.rotate();
                 let plan_like = ReportPlan::over(SourceRef {
                     id: env.source,
                     generation: env.generation,
                 });
-                let out = self.reg.put_result(&plan_like, r)?;
+                let out = self.reg.put_result(&plan_like, r).map_err(z8)?;
                 ctx.set(self.key.clone(), out.to_json()).await;
                 Ok(format!("result {} re-viewed as {}", env.handle, out.handle))
             }
             (Role::Result, LanceOp::Materialize) => {
-                let r = self.reg.result(&env)?;
+                let r = self.reg.result(&env).map_err(z8)?;
                 // The boundary stores are behind std locks; render inside this
                 // block so every guard is dropped before the next await.
                 let body = {
@@ -197,7 +210,7 @@ impl LanceTask {
                         kv: &kv,
                         catalog: &cat,
                     };
-                    grid_value(&t.grid(&r))?
+                    grid_value(&t.grid(&r)).map_err(z8)?
                 };
                 ctx.set(self.out_key.clone(), body).await;
                 Ok(format!("result {} materialized", env.handle))
@@ -210,9 +223,9 @@ impl LanceTask {
                 "materialize needs a result handle; place an execute task before it",
             )),
             (Role::Plan, LanceOp::Execute) => {
-                let plan = self.reg.plan(&env)?;
-                let res = self.reg.execute(&plan)?;
-                let out = self.reg.put_result(&plan, res)?;
+                let plan = self.reg.plan(&env).map_err(z8)?;
+                let res = self.reg.execute(&plan).map_err(z8)?;
+                let out = self.reg.put_result(&plan, res).map_err(z8)?;
                 ctx.set(self.key.clone(), out.to_json()).await;
                 Ok(format!(
                     "plan {} folded into result {}",
@@ -220,7 +233,7 @@ impl LanceTask {
                 ))
             }
             (Role::Plan, op) => {
-                let plan = (*self.reg.plan(&env)?).clone();
+                let plan = (*self.reg.plan(&env).map_err(z8)?).clone();
                 let plan = match op.clone() {
                     LanceOp::Filter(s) => plan.filter(s),
                     LanceOp::Axis(c, r) => plan.axis(c, r),
@@ -230,7 +243,7 @@ impl LanceTask {
                         unreachable!("handled above")
                     }
                 };
-                let out = self.reg.put_plan(plan)?;
+                let out = self.reg.put_plan(plan).map_err(z8)?;
                 ctx.set(self.key.clone(), out.to_json()).await;
                 Ok(format!("plan {} rewritten as {}", env.handle, out.handle))
             }
@@ -252,61 +265,4 @@ impl Task for LanceTask {
             Some(summary),
         ))
     }
-}
-
-/// The presented grid as one JSON value. Ported from `z8run-lance`
-/// (`grid_value`): built directly from the grid, never rendered to text and
-/// parsed back, so every cell keeps its exact value.
-pub fn grid_value(g: &Grid) -> Result<Value> {
-    let strs = |v: &[String]| Value::from(v.to_vec());
-    let vals = |v: &[CellValue]| v.iter().map(|&c| cell_value(c)).collect::<Result<Vec<_>>>();
-    let pages = g
-        .pages
-        .iter()
-        .map(|(p, rows)| {
-            let rows = rows
-                .iter()
-                .map(|row| {
-                    let cells = row
-                        .cells
-                        .iter()
-                        .map(|c| vals(c).map(Value::from))
-                        .collect::<Result<Vec<_>>>()?;
-                    Ok(json!({ "row": strs(&row.labels), "cells": cells, "total": vals(&row.total)? }))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(json!({ "page": strs(p), "rows": rows }))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json!({
-        "columns": g.columns.iter().map(|c| strs(c)).collect::<Vec<_>>(),
-        "measures": strs(&g.measures),
-        "pages": pages,
-        "grand_total": vals(&g.grand_total)?,
-    }))
-}
-
-/// One cell, exactly. A non-finite real has no JSON form and is refused.
-fn cell_value(v: CellValue) -> Result<Value> {
-    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-    Ok(match v {
-        CellValue::Null => Value::Null,
-        CellValue::Int(i) => Value::from(i),
-        CellValue::Real(r) if !r.is_finite() => {
-            return Err(failed(format!(
-                "non-finite cell {r} has no JSON representation"
-            )))
-        }
-        CellValue::Real(r)
-            if r.fract() == 0.0
-                && (0.0..2.0 * TWO_63).contains(&r)
-                && !(r == 0.0 && r.is_sign_negative()) =>
-        {
-            Value::from(r as u64)
-        }
-        CellValue::Real(r) if r.fract() == 0.0 && (-TWO_63..0.0).contains(&r) => {
-            Value::from(r as i64)
-        }
-        CellValue::Real(r) => Value::from(r),
-    })
 }

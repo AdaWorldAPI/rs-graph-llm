@@ -2,17 +2,22 @@
 name = "graph-flow-lance"
 version = "0.1.0"
 edition = "2021"
-description = "graph-flow Tasks over the lance-graph fold algebra. The Context carries handles, never populations: LangGraph's state channels and reducers become lance-graph-report fold states with merge laws, its Send fan-out becomes a mask-set coordinate folded in one pass, and a checkpoint holds generation-checked handles."
+description = "graph-flow Tasks over the lance-graph fold algebra, sharing z8run-lance's handle seam. The Context carries handles, never populations: LangGraph's state channels and reducers become lance-graph-report fold states with merge laws, its Send fan-out becomes a mask-set coordinate folded in one pass, a checkpoint holds generation-checked handles, and a graph-flow graph runs as a z8run node."
 license = "MIT"
 publish = false
 
 # Excluded from the rs-graph-llm workspace (see the root Cargo.toml): the
-# lance-graph path below is a sibling checkout, never crates.io.
+# lance-graph and z8run paths below are sibling checkouts, never crates.io.
 [dependencies]
 graph-flow = { path = "../../graph-flow" }
 lance-graph-report = { path = "../../../lance-graph/crates/lance-graph-report" }
+# The seam itself (registry, envelope, export) is z8run-lance's, so a handle a
+# z8run flow mints resolves in a graph-flow graph and the other way round.
+z8run-core = { path = "../../../z8run/crates/z8run-core" }
+z8run-lance = { path = "../../../z8run/crates/z8run-lance" }
 async-trait = "0.1"
 serde_json = "1.0"
+uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
