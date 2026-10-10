@@ -92,6 +92,12 @@ loop over the raw vectors the source was built from.
 | `a_paused_graph_crosses_z8run_as_a_session_handle` | the pause leaves z8run as a session handle; the saved session holds only the plan handle; a webhook message resumes it with the right answer, a session of another graph is refused, and a finished session is not kept |
 | `a_graph_flow_node_takes_handles_never_data` | a payload of rows is refused, and so is an unknown graph |
 
+`tests/do_fold.rs`:
+
+| test | what it shows |
+|---|---|
+| `the_do_fold_runs_on_existing_fold_states` | lance-graph's DO fold law on today's fold states: the state guard is a selection, the destination is the axis, the mutation state is an idempotent `Max` over an add flag and a remove flag; the flags equal the oracle per destination, one action per destination, add with remove is a conflict, and redelivering every contribution doubles the counts and changes no flag |
+
 Each guard was disabled once and its test went red:
 
 | disabled | red |
@@ -105,6 +111,7 @@ Each guard was disabled once and its test went red:
 | the node ignores the resume input | `a_paused_graph_crosses_z8run_as_a_session_handle` |
 | the node passes data through | `a_graph_flow_node_takes_handles_never_data` |
 | the node drops the result handle | the three z8run flow tests that read it |
+| the DO fold's flags use `Sum`, which is not idempotent | `the_do_fold_runs_on_existing_fold_states` |
 
 With the generation check off, a paused plan still fails closed:
 `lance-graph-report` refuses it again with `StaleSource`. A finished result
@@ -125,3 +132,10 @@ has only the registry's check, which is why the test also resolves one.
   model and OGAR's loco gap list.
 - Retrieval through Quack plans. Rig's LanceDB store adapter queries Lance
   directly today.
+- The DO-arm adapter: a task that turns each folded destination into one
+  contract `ActionInvocation` and dispatches it through graph-flow-action.
+  It needs the destination as a `NodeGuid`, an invocation identity that is
+  not the arrival time, and one of the two `ActionInvocation` types, OGAR's
+  or the contract's. The `graph-flow` node mints session ids from the
+  arrival time today, so a duplicate delivery, for example from z8run's MQTT
+  node at QoS 1, would run an action graph twice.
