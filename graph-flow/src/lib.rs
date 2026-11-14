@@ -188,7 +188,7 @@ pub use storage::{
     GraphStorage, InMemoryGraphStorage, InMemorySessionStorage, Session, SessionStorage,
 };
 #[cfg(feature = "kanban")]
-pub use storage_kanban::KanbanSessionStorage;
+pub use storage_kanban::{KanbanSessionStorage, LifecycleRefusal, MoveCursor};
 pub use storage_postgres::PostgresSessionStorage;
 #[cfg(feature = "surreal-lance")]
 pub use storage_surreal::SurrealSessionStorage;

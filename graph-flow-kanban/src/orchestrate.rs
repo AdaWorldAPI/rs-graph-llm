@@ -196,7 +196,8 @@ mod tests {
             PATIENT,
             "approve",
             &GateDecision::Hold {
-                reason: "uncertain".into(),
+                texture: lance_graph_contract::mul::TrustTexture::Uncertain,
+                flow: lance_graph_contract::mul::FlowState::Transition,
             },
             guid(),
             None,

@@ -26,9 +26,20 @@
 
 #![cfg(feature = "kanban")]
 
-use graph_flow::{Context, ExecutionStatus, KanbanSessionStorage, Session, SessionStorage};
+use graph_flow::{Context, KanbanSessionStorage, Session, SessionStorage};
 use lance_graph_contract::collapse_gate::MailboxId;
 use lance_graph_contract::kanban::{KanbanColumn, KanbanMove};
+use lance_graph_contract::mul::{FlowState, GateDecision, TrustTexture};
+use lance_graph_contract::revision::{CounterfactualVerdict, EvidentialEffect, RevisionVerdict};
+
+const BLOCK: GateDecision = GateDecision::Block {
+    texture: TrustTexture::Overconfident,
+    flow: FlowState::Anxiety,
+};
+const ACCEPT: RevisionVerdict = RevisionVerdict {
+    effect: EvidentialEffect::IncreaseEligible,
+    counterfactual: CounterfactualVerdict::Necessary,
+};
 
 fn session_at(id: &str, task_id: &str) -> Session {
     Session {
@@ -40,20 +51,30 @@ fn session_at(id: &str, task_id: &str) -> Session {
     }
 }
 
-/// Drive a session through the same fixed lifecycle on the given storage:
-/// seed -> task hop (CognitiveWork) -> completed (Commit) -> error (Prune via
-/// a second hop first). Deterministic, so two runs are comparable.
-async fn drive_lifecycle(storage: &KanbanSessionStorage, id: &str) {
-    storage.save(session_at(id, "a")).await.unwrap(); // first save: Planning spawn
-    storage.save(session_at(id, "b")).await.unwrap(); // hop -> CognitiveWork
-    storage
-        .save_with_status(session_at(id, "b"), &ExecutionStatus::Completed)
-        .await
-        .unwrap(); // -> Commit
-    storage
-        .save_with_status(session_at(id, "b"), &ExecutionStatus::Error("x".into()))
-        .await
-        .unwrap(); // -> Prune
+/// Seed a session and walk it to `Evaluation` with two `Flow` gates.
+async fn to_evaluation(storage: &KanbanSessionStorage, id: &str) {
+    storage.save(session_at(id, "a")).await.unwrap();
+    for _ in 0..2 {
+        let cursor = storage.cursor(id).await.unwrap();
+        storage
+            .apply_gate(id, cursor, &GateDecision::Flow)
+            .await
+            .unwrap();
+    }
+}
+
+/// `Planning -> CognitiveWork -> Evaluation -> Commit`, on an accepted revision.
+async fn drive_to_commit(storage: &KanbanSessionStorage, id: &str) {
+    to_evaluation(storage, id).await;
+    let cursor = storage.cursor(id).await.unwrap();
+    storage.apply_revision(id, cursor, ACCEPT).await.unwrap();
+}
+
+/// `Planning -> CognitiveWork -> Evaluation -> Prune`, on a MUL veto.
+async fn drive_to_prune(storage: &KanbanSessionStorage, id: &str) {
+    to_evaluation(storage, id).await;
+    let cursor = storage.cursor(id).await.unwrap();
+    storage.apply_gate(id, cursor, &BLOCK).await.unwrap();
 }
 
 // --- probe 1: no soup ---------------------------------------------------
@@ -65,43 +86,54 @@ async fn no_soup_interleaved_mailboxes_never_blend() {
     let storage_a = KanbanSessionStorage::new(mb_a);
     let storage_b = KanbanSessionStorage::new(mb_b);
 
-    // Interleave: alternate saves across the two storages.
+    // Interleave: alternate lifecycle steps across the two storages.
     storage_a.save(session_at("sa", "a")).await.unwrap();
     storage_b.save(session_at("sb", "a")).await.unwrap();
-    storage_a.save(session_at("sa", "b")).await.unwrap();
-    storage_b.save(session_at("sb", "b")).await.unwrap();
+    for _ in 0..2 {
+        for (storage, id) in [(&storage_a, "sa"), (&storage_b, "sb")] {
+            let cursor = storage.cursor(id).await.unwrap();
+            storage
+                .apply_gate(id, cursor, &GateDecision::Flow)
+                .await
+                .unwrap();
+        }
+    }
+    let cursor = storage_a.cursor("sa").await.unwrap();
     storage_a
-        .save_with_status(session_at("sa", "b"), &ExecutionStatus::Completed)
+        .apply_revision("sa", cursor, ACCEPT)
         .await
         .unwrap();
-    storage_b
-        .save_with_status(session_at("sb", "b"), &ExecutionStatus::Error("x".into()))
-        .await
-        .unwrap();
+    let cursor = storage_b.cursor("sb").await.unwrap();
+    storage_b.apply_gate("sb", cursor, &BLOCK).await.unwrap();
 
     // Every witness entry is stamped with its OWN storage's mailbox.
     let moves_a = storage_a.moves("sa").await;
     let moves_b = storage_b.moves("sb").await;
-    assert!(!moves_a.is_empty() && !moves_b.is_empty());
+    assert_eq!((moves_a.len(), moves_b.len()), (3, 3));
     assert!(moves_a.iter().all(|m| m.mailbox == mb_a), "A stays A");
     assert!(moves_b.iter().all(|m| m.mailbox == mb_b), "B stays B");
 
     // One storage cannot see the other's sessions at all.
-    assert!(storage_a.get("sb").await.unwrap().is_none(), "A can't see B");
-    assert!(storage_b.get("sa").await.unwrap().is_none(), "B can't see A");
+    assert!(
+        storage_a.get("sb").await.unwrap().is_none(),
+        "A can't see B"
+    );
+    assert!(
+        storage_b.get("sa").await.unwrap().is_none(),
+        "B can't see A"
+    );
     assert!(storage_a.moves("sb").await.is_empty());
 
     // Interleaving changed nothing: a solo run of the same lifecycle on a
     // fresh storage produces the identical witness-column sequence.
     let solo = KanbanSessionStorage::new(mb_a);
-    solo.save(session_at("sa", "a")).await.unwrap();
-    solo.save(session_at("sa", "b")).await.unwrap();
-    solo.save_with_status(session_at("sa", "b"), &ExecutionStatus::Completed)
-        .await
-        .unwrap();
+    drive_to_commit(&solo, "sa").await;
     let solo_cols: Vec<KanbanColumn> = solo.moves("sa").await.iter().map(|m| m.to).collect();
     let inter_cols: Vec<KanbanColumn> = moves_a.iter().map(|m| m.to).collect();
-    assert_eq!(solo_cols, inter_cols, "foreign mailbox traffic is invisible");
+    assert_eq!(
+        solo_cols, inter_cols,
+        "foreign mailbox traffic is invisible"
+    );
 }
 
 // --- probe 2: ownership rides the storage, never the Session -------------
@@ -115,7 +147,7 @@ async fn ownership_comes_from_the_boundary_not_the_dto() {
     let storage_9 = KanbanSessionStorage::new(9);
 
     for storage in [&storage_3, &storage_9] {
-        drive_lifecycle(storage, "same-session").await;
+        drive_to_prune(storage, "same-session").await;
     }
 
     let stamped_3: Vec<MailboxId> = storage_3
@@ -133,7 +165,11 @@ async fn ownership_comes_from_the_boundary_not_the_dto() {
 
     assert!(stamped_3.iter().all(|&mb| mb == 3));
     assert!(stamped_9.iter().all(|&mb| mb == 9));
-    assert_eq!(stamped_3.len(), stamped_9.len(), "identical lifecycles");
+    assert_eq!(
+        (stamped_3.len(), stamped_9.len()),
+        (3, 3),
+        "identical lifecycles"
+    );
 }
 
 // --- probe 3: meta-awareness reads witness VALUES, holds no handle -------
@@ -144,12 +180,7 @@ async fn ownership_comes_from_the_boundary_not_the_dto() {
 fn meta_awareness(witnesses: &[(MailboxId, Vec<KanbanMove>)]) -> Option<MailboxId> {
     witnesses
         .iter()
-        .max_by_key(|(_, moves)| {
-            moves
-                .iter()
-                .filter(|m| m.to == KanbanColumn::Prune)
-                .count()
-        })
+        .max_by_key(|(_, moves)| moves.iter().filter(|m| m.to == KanbanColumn::Prune).count())
         .map(|(mb, _)| *mb)
 }
 
@@ -159,13 +190,8 @@ async fn episodic_witness_gives_meta_awareness_without_membership() {
     let storage_b = KanbanSessionStorage::new(2);
 
     // Mailbox 1: clean lifecycle (ends Commit). Mailbox 2: ends in Prune.
-    storage_a.save(session_at("s1", "a")).await.unwrap();
-    storage_a.save(session_at("s1", "b")).await.unwrap();
-    storage_a
-        .save_with_status(session_at("s1", "b"), &ExecutionStatus::Completed)
-        .await
-        .unwrap();
-    drive_lifecycle(&storage_b, "s2").await; // ends with an Error -> Prune
+    drive_to_commit(&storage_a, "s1").await;
+    drive_to_prune(&storage_b, "s2").await;
 
     // The observer clones the witnesses OUT — values, not handles — and
     // computes a cross-mailbox observation.
