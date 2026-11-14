@@ -139,7 +139,6 @@ impl KanbanSessionStorage {
                         // move-log length before this push — monotonic per session, per
                         // the brief's explicit instruction.
                         witness_chain_position: record.envelope.moves.len() as u32,
-                        libet_offset_us: 0,
                         exec: ExecTarget::Native,
                     });
                     record.envelope.column = to;

@@ -167,17 +167,11 @@ impl KanbanPlanEnvelope {
     }
 
     /// Emit the [`KanbanMove`], move the column, and bump the cycle on a
-    /// re-deliberation re-entry. Stamps the Libet Σ-commit anchor (`-550 ms`)
-    /// on the `Planning → CognitiveWork` crossing, `0` otherwise — matching the
-    /// contract's [`KanbanMove::libet_offset_us`] convention.
+    /// re-deliberation re-entry. The Libet window is not stored: the contract
+    /// derives it from the `Planning → CognitiveWork` crossing
+    /// ([`KanbanMove::libet_window_us`]).
     fn record_move(&mut self, to: KanbanColumn) {
         let from = self.column;
-        let libet_offset_us = if from == KanbanColumn::Planning && to == KanbanColumn::CognitiveWork
-        {
-            -550_000
-        } else {
-            0
-        };
         self.moves.push(KanbanMove {
             mailbox: self.mailbox,
             from,
@@ -186,7 +180,6 @@ impl KanbanPlanEnvelope {
             // stands in for the witness-chain index until the A3 witness-arc
             // column lands. Stamp the CURRENT cycle, then advance.
             witness_chain_position: self.cycle,
-            libet_offset_us,
             exec: self.exec,
         });
         self.column = to;
@@ -201,8 +194,18 @@ impl KanbanPlanEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lance_graph_contract::kanban::LIBET_COMMIT_WINDOW_US;
+    use lance_graph_contract::mul::{FlowState, TrustTexture};
 
     const MBX: MailboxId = 42;
+    const HOLD: GateDecision = GateDecision::Hold {
+        texture: TrustTexture::Uncertain,
+        flow: FlowState::Transition,
+    };
+    const BLOCK: GateDecision = GateDecision::Block {
+        texture: TrustTexture::Overconfident,
+        flow: FlowState::Anxiety,
+    };
 
     #[test]
     fn new_starts_in_planning_with_no_moves() {
@@ -230,9 +233,11 @@ mod tests {
         // Absorbing — no further forward move.
         assert_eq!(env.advance(&GateDecision::Flow), None);
         assert_eq!(env.moves.len(), 3);
-        // Libet Σ-commit anchor only on the Planning → CognitiveWork crossing.
-        assert_eq!(env.moves[0].libet_offset_us, -550_000);
-        assert_eq!(env.moves[1].libet_offset_us, 0);
+        // The Libet window is derived from the Planning → CognitiveWork
+        // crossing and from nothing else.
+        assert_eq!(env.moves[0].libet_window_us(), Some(LIBET_COMMIT_WINDOW_US));
+        assert_eq!(env.moves[1].libet_window_us(), None);
+        assert_eq!(env.moves[2].libet_window_us(), None);
         // ExecTarget rides through every move, never flattened.
         assert!(env.moves.iter().all(|m| m.exec == ExecTarget::Jit));
     }
@@ -240,9 +245,7 @@ mod tests {
     #[test]
     fn block_at_planning_vetoes_to_prune() {
         let mut env = KanbanPlanEnvelope::new(MBX, ExecTarget::Native);
-        let out = env.advance(&GateDecision::Block {
-            reason: "free won't".into(),
-        });
+        let out = env.advance(&BLOCK);
         assert_eq!(out, Some(KanbanColumn::Prune));
         assert!(env.is_settled());
     }
@@ -252,9 +255,7 @@ mod tests {
         let mut env = KanbanPlanEnvelope::new(MBX, ExecTarget::Native);
         env.advance(&GateDecision::Flow); // → CognitiveWork
                                           // No legal veto edge mid-CognitiveWork: gate yields no move (hold).
-        let out = env.advance(&GateDecision::Block {
-            reason: "too late".into(),
-        });
+        let out = env.advance(&BLOCK);
         assert_eq!(out, None);
         assert_eq!(env.column, KanbanColumn::CognitiveWork);
     }
@@ -262,9 +263,7 @@ mod tests {
     #[test]
     fn hold_stays_in_place() {
         let mut env = KanbanPlanEnvelope::new(MBX, ExecTarget::Native);
-        let out = env.advance(&GateDecision::Hold {
-            reason: "uncertain".into(),
-        });
+        let out = env.advance(&HOLD);
         assert_eq!(out, None);
         assert_eq!(env.column, KanbanColumn::Planning);
         assert!(env.moves.is_empty());
